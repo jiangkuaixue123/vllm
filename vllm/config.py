@@ -2565,9 +2565,16 @@ def _get_and_verify_dtype(
             if (current_platform.is_cpu() and sys.platform.startswith("darwin")
                     and current_platform.get_cpu_architecture()
                     == CpuArchEnum.ARM and config_dtype == torch.bfloat16):
-                logger.info("For macOS with Apple Silicon, currently bfloat16 "
-                            "is not supported. Setting dtype to float16.")
-                torch_dtype = torch.float16
+                # logger.info("For macOS with Apple Silicon, currently bfloat16 "
+                #             "is not supported. Setting dtype to float16.")
+                try:
+                    bf16_tensor = torch.randn(3, 3, dtype=torch.bfloat16)
+                    torch_dtype = torch.bfloat16
+                except Exception as e:
+                    logger.info(
+                        "For macOS with Apple Silicon, Failed to create bfloat16 tensor."
+                        "Setting dtype to float16.")
+                    torch_dtype = torch.float16
 
             if current_platform.is_hpu() and config_dtype == torch.float16:
                 logger.info(

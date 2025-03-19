@@ -130,6 +130,21 @@ elseif (ASIMD_FOUND)
 elseif(APPLE_SILICON_FOUND)
     message(STATUS "Apple Silicon Detected")
     set(ENABLE_NUMA OFF)
+    try_compile(
+        APPLE_SILICON_BFLOAT16_SUPPORT
+        ${CMAKE_BINARY_DIR}
+        ${CMAKE_SOURCE_DIR}/cmake/try_compile.cpp
+        COMPILE_DEFINITIONS
+            "-march=armv8.2-a+bf16+dotprod+fp16"
+    )
+    if(APPLE_SILICON_BFLOAT16_SUPPORT)
+        message(STATUS "Successfully compiled with ARM architecture features")
+        set(MARCH_FLAGS "-march=armv8.2-a+bf16+dotprod+fp16")
+        list(APPEND CXX_COMPILE_FLAGS ${MARCH_FLAGS})     
+        add_compile_definitions(ARM_BF16_SUPPORT)
+    else()
+        message(WARNING "Failed to compile with ARM architecture features")
+    endif()
 elseif (S390_FOUND)
     message(STATUS "S390 detected")
     # Check for S390 VXE support
