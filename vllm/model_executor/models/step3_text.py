@@ -9,8 +9,8 @@ from torch import nn
 
 from vllm.attention import Attention
 from vllm.compilation.decorators import support_torch_compile
-from vllm.config import CacheConfig, ModelConfig, VllmConfig
-from vllm.distributed import (get_pp_group,
+from vllm.config import CacheConfig, ModelConfig, VllmConfig, get_current_vllm_config
+from vllm.distributed import (get_pp_group, get_ep_group,
                               get_tensor_model_parallel_world_size,
                               tensor_model_parallel_all_reduce)
 from vllm.logger import init_logger
@@ -32,7 +32,7 @@ from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.model_executor.sampling_metadata import SamplingMetadata
 from vllm.sequence import IntermediateTensors
 
-from .interfaces import SupportsPP
+from .interfaces import SupportsPP, MixtureOfExperts
 from .utils import (PPMissingLayer, is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers)
 
@@ -44,7 +44,8 @@ class FusedMoEBlock(nn.Module):
     def __init__(self,
                  config: ModelConfig,
                  quant_config: Optional[QuantizationConfig] = None,
-                 prefix: str = ""):
+                 prefix: str = "",
+                 enable_eplb: bool = False):
         super().__init__()
         self.tp_size = get_tensor_model_parallel_world_size()
 
@@ -52,7 +53,9 @@ class FusedMoEBlock(nn.Module):
             raise ValueError(
                 f"Tensor parallel size {self.tp_size} is greater than "
                 f"the number of experts {config.moe_num_experts}.")
-
+        vllm_config = get_current_vllm_config()
+        parallel_config = vllm_config.parallel_config
+        self.n_redundant_experts = parallel_config.eplb_config.n_redundant_experts
         self.experts = FusedMoE(num_experts=config.moe_num_experts,
                                 top_k=config.moe_top_k,
                                 hidden_size=config.hidden_size,
@@ -60,12 +63,24 @@ class FusedMoEBlock(nn.Module):
                                 reduce_results=False,
                                 renormalize=config.norm_expert_weight,
                                 quant_config=quant_config,
-                                prefix=f"{prefix}.experts")
+                                prefix=f"{prefix}.experts",
+                                enable_eplb=enable_eplb,
+                                num_redundant_experts=self.n_redundant_experts)
         self.gate = ReplicatedLinear(config.hidden_size,
                                      config.moe_num_experts,
                                      bias=False,
                                      quant_config=None,
                                      prefix=f"{prefix}.gate")
+        
+        self.ep_group = get_ep_group().device_group
+        self.ep_rank = self.ep_group.rank()
+        self.ep_size = self.ep_group.size()
+        self.n_logical_experts = config.moe_num_experts
+        self.n_physical_experts = self.n_logical_experts + self.n_redundant_experts
+        self.n_local_physical_experts = self.n_physical_experts // self.ep_size
+        self.n_route_experts = config.moe_num_experts
+        self.n_shared_experts = config.moe_num_experts
+        self.enable_eplb = enable_eplb
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         orig_shape = hidden_states.shape
@@ -205,7 +220,8 @@ class Step3TextDecoderLayer(nn.Module):
                  config: ModelConfig,
                  cache_config: Optional[CacheConfig] = None,
                  quant_config: Optional[QuantizationConfig] = None,
-                 prefix: str = "") -> None:
+                 prefix: str = "",
+                 enable_eplb: bool = False) -> None:
         super().__init__()
         config = config.hf_config
         self.hidden_size = config.hidden_size
@@ -238,7 +254,8 @@ class Step3TextDecoderLayer(nn.Module):
         if layer_idx in moe_layers_idx:
             self.moe = FusedMoEBlock(config=config,
                                      quant_config=quant_config,
-                                     prefix=f"{prefix}.moe")
+                                     prefix=f"{prefix}.moe",
+                                     enable_eplb=enable_eplb)
             self.share_expert = Step3TextMLP(
                 hidden_size=self.hidden_size,
                 intermediate_size=config.share_expert_dim,
@@ -290,13 +307,15 @@ class Step3TextDecoderLayer(nn.Module):
 @support_torch_compile
 class Step3TextModel(nn.Module):
 
-    def __init__(self, vllm_config: VllmConfig, prefix: str = "") -> None:
+    def __init__(self, vllm_config: VllmConfig, prefix: str = "",
+                 enable_eplb: bool = False) -> None:
         super().__init__()
         config = vllm_config.model_config.hf_config
         cache_config = vllm_config.cache_config
         quant_config = vllm_config.quant_config
         self.vocab_size = config.vocab_size
         self.config = config
+        self.enable_eplb = enable_eplb
 
         if get_pp_group().is_first_rank or (config.tie_word_embeddings
                                             and get_pp_group().is_last_rank):
@@ -313,7 +332,8 @@ class Step3TextModel(nn.Module):
                                                  model_config,
                                                  cache_config=cache_config,
                                                  quant_config=quant_config,
-                                                 prefix=prefix),
+                                                 prefix=prefix,
+                                                 enable_eplb=self.enable_eplb),
             prefix=f"{prefix}.layers",
         )
         if get_pp_group().is_last_rank:
@@ -360,7 +380,7 @@ class Step3TextModel(nn.Module):
         return hidden_states
 
 
-class Step3TextForCausalLM(nn.Module, SupportsPP):
+class Step3TextForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
 
     def __init__(
         self,
@@ -395,6 +415,31 @@ class Step3TextForCausalLM(nn.Module, SupportsPP):
 
         self.make_empty_intermediate_tensors = (
             self.model.make_empty_intermediate_tensors)
+        
+        self.moe_layers: list[FusedMoEBlock] = []
+        self.expert_weights: list[torch.Tensor] = []
+        example_moe = None
+        for layer in self.model.layers:
+            if isinstance(layer, PPMissingLayer):
+                continue
+
+            assert isinstance(layer, Step3TextDecoderLayer)
+            if layer.use_moe:
+                example_moe = layer.moe
+                self.moe_layers.append(example_moe.experts)
+                self.expert_weights.append(example_moe.experts.get_expert_weights())
+            
+        if example_moe is None:
+            raise ValueError("No MOE layers found in the model.")
+        
+        self.num_moe_layers = len(self.moe_layers)
+        self.num_logical_experts = example_moe.n_logical_experts
+        self.num_physical_experts = example_moe.n_physical_experts
+        self.num_local_physical_experts = example_moe.n_local_physical_experts
+        self.num_route_experts = example_moe.n_route_experts
+        self.num_shared_experts = example_moe.n_shared_experts
+        self.num_redundant_experts = example_moe.n_redundant_experts
+        self.num_expert_groups = 1
 
     def forward(self,
                 input_ids: torch.Tensor,
@@ -519,3 +564,18 @@ class Step3TextForCausalLM(nn.Module, SupportsPP):
                         weight_loader(param, loaded_weight)
                         loaded_params.add(name)
         return loaded_params
+
+    def set_eplb_state(
+        self,
+        expert_load_view: torch.Tensor,
+        logical_to_physical_map: torch.Tensor,
+        logical_replica_count: torch.Tensor,
+    ) -> None:
+        for layer_idx, layer in enumerate(self.moe_layers):
+            # Register the expert weights.
+            layer.set_eplb_state(
+                moe_layer_idx=layer_idx,
+                expert_load_view=expert_load_view,
+                logical_to_physical_map=logical_to_physical_map,
+                logical_replica_count=logical_replica_count,
+            )

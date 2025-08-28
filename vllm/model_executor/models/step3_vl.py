@@ -39,7 +39,7 @@ from vllm.sequence import IntermediateTensors
 from vllm.transformers_utils.configs import Step3VisionEncoderConfig
 from vllm.transformers_utils.tokenizer import AnyTokenizer
 
-from .interfaces import MultiModalEmbeddings, SupportsMultiModal, SupportsPP
+from .interfaces import MultiModalEmbeddings, SupportsMultiModal, SupportsPP, MixtureOfExperts
 from .utils import (AutoWeightsLoader, WeightsMapper, flatten_bn,
                     init_vllm_registered_model, maybe_prefix,
                     merge_multimodal_embeddings)
@@ -860,7 +860,7 @@ class Step3VisionTransformer(nn.Module):
                                         info=Step3VLProcessingInfo,
                                         dummy_inputs=Step3VLDummyInputsBuilder)
 class Step3VLForConditionalGeneration(nn.Module, SupportsMultiModal,
-                                      SupportsPP):
+                                      SupportsPP, MixtureOfExperts):
 
     hf_to_vllm_mapper = WeightsMapper(orig_to_new_prefix={
         "model.": "language_model.model.",
@@ -922,6 +922,16 @@ class Step3VLForConditionalGeneration(nn.Module, SupportsMultiModal,
 
         self.make_empty_intermediate_tensors = (
             self.language_model.make_empty_intermediate_tensors)
+        
+        self.num_moe_layers = self.language_model.num_moe_layers
+        self.num_logical_experts = self.language_model.num_logical_experts
+        self.num_physical_experts = self.language_model.num_physical_experts
+        self.num_local_physical_experts = self.language_model.num_local_physical_experts
+        self.num_route_experts = self.language_model.num_route_experts
+        self.num_shared_experts = self.language_model.num_shared_experts
+        self.num_redundant_experts = self.language_model.num_redundant_experts
+        self.num_expert_groups = self.language_model.num_expert_groups
+        self.expert_weights = self.language_model.expert_weights
 
     @cached_property
     def sampler(self):
@@ -1115,3 +1125,15 @@ class Step3VLForConditionalGeneration(nn.Module, SupportsMultiModal,
         loaded_weights = loader.load_weights(weights,
                                              mapper=self.hf_to_vllm_mapper)
         return loaded_weights
+
+    def set_eplb_state(
+        self,
+        expert_load_view: torch.Tensor,
+        logical_to_physical_map: torch.Tensor,
+        logical_replica_count: torch.Tensor,
+    ) -> None:
+        self.language_model.set_eplb_state(
+            expert_load_view=expert_load_view,
+            logical_to_physical_map=logical_to_physical_map,
+            logical_replica_count=logical_replica_count,
+        )
