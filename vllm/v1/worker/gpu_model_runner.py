@@ -26,14 +26,15 @@ from vllm.compilation.cuda_graph import CUDAGraphWrapper
 from vllm.compilation.monitor import set_cudagraph_capturing_enabled
 from vllm.config import (CompilationLevel, CUDAGraphMode, VllmConfig,
                          get_layers_from_vllm_config, update_config)
+from vllm.distributed.afd_transfer import AFDConnectorFactory
 from vllm.distributed.eplb.eplb_state import EplbState
 from vllm.distributed.kv_transfer import (get_kv_transfer_group,
                                           has_kv_transfer_group)
 from vllm.distributed.kv_transfer.kv_connector.utils import copy_kv_blocks
 from vllm.distributed.parallel_state import (
-    get_pp_group, get_tp_group, graph_capture, is_global_first_rank,
-    prepare_communication_buffer_for_model)
-from vllm.forward_context import (BatchDescriptor, DPMetadata,
+    get_pp_group, get_tp_group, get_world_group, graph_capture,
+    is_global_first_rank, prepare_communication_buffer_for_model)
+from vllm.forward_context import (AFDMetadata, BatchDescriptor, DPMetadata,
                                   set_forward_context)
 from vllm.logger import init_logger
 from vllm.model_executor.layers.attention_layer_base import AttentionLayerBase
@@ -403,6 +404,16 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         # means this layer will perform attention using the keys and values
         # from the KV cache of `shared_kv_cache_layers[layer_name]`.
         self.shared_kv_cache_layers: dict[str, str] = {}
+
+        # init AFD config
+        self.afd_config = vllm_config.afd_config
+        if self.afd_config and self.afd_config.afd_role == "attention":
+            self.afd_connector = AFDConnectorFactory.create_connector(
+                get_world_group().rank,
+                get_world_group().local_rank, vllm_config)
+            self.afd_connector.init_afd_connector()
+            self.num_stages = self.afd_config.num_afd_stages
+
         self.kv_sharing_fast_prefill_eligible_layers: set[str] = set()
 
         self.kv_sharing_fast_prefill_logits_indices = None
@@ -923,7 +934,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
     ) -> tuple[PerLayerAttnMetadata, torch.Tensor,
                Optional[SpecDecodeMetadata], np.ndarray,
                Optional[CommonAttentionMetadata], int, Optional[UBatchSlices],
-               Optional[torch.Tensor]]:
+               Optional[torch.Tensor], Optional[AFDMetadata]]:
         """
         :return: tuple[
             attn_metadata: layer-to-attention_metadata mapping,
@@ -1202,6 +1213,40 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 encoder_seq_lens=encoder_seq_lens,
             )
 
+            if self.afd_config and self.num_stages > 1:
+                if num_reqs >= self.num_stages:
+                    num_reqs_per_stage = num_reqs // self.num_stages
+                    afd_reqs_start_loc = [
+                        num_reqs_per_stage * i
+                        for i in range(self.num_stages + 1)
+                    ]
+                    afd_reqs_start_loc[-1] = num_reqs
+                else:
+                    afd_reqs_start_loc = [i for i in range(num_reqs + 1)]
+
+                # For prefill, compute tokens per stage based on actual token
+                # counts
+                afd_tokens_start_loc = [0]
+                afd_tokens_lens = []
+                for stage_idx in range(len(afd_reqs_start_loc) - 1):
+                    stage_start_req = afd_reqs_start_loc[stage_idx]
+                    stage_end_req = afd_reqs_start_loc[stage_idx + 1]
+                    stage_tokens = int(query_start_loc[stage_end_req] -
+                                       query_start_loc[stage_start_req])
+                    afd_tokens_lens.append(stage_tokens)
+                    afd_tokens_start_loc.append(afd_tokens_start_loc[-1] +
+                                                stage_tokens)
+
+                afd_metadata = AFDMetadata(
+                    afd_tokens_start_loc=afd_tokens_start_loc,
+                    afd_reqs_start_loc=afd_reqs_start_loc,
+                    afd_stage_idx=0,
+                    afd_connector=self.afd_connector,
+                    afd_tokens_lens=afd_tokens_lens,
+                )
+            else:
+                afd_metadata = None
+
             if (self.speculative_config
                     and spec_decode_common_attn_metadata is None):
                 if isinstance(self.drafter, EagleProposer):
@@ -1250,6 +1295,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     attn_metadata_i = builder.build(
                         common_prefix_len=common_prefix_len,
                         common_attn_metadata=common_attn_metadata,
+                        afd_metadata=afd_metadata,
                         **extra_attn_metadata_args)
                     for layer_name in attn_group.layer_names:
                         attn_metadata[layer_name] = attn_metadata_i
@@ -1261,7 +1307,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         return (attn_metadata, logits_indices, spec_decode_metadata,
                 num_scheduled_tokens, spec_decode_common_attn_metadata,
                 max_num_scheduled_tokens, ubatch_slices,
-                num_tokens_after_padding)
+                num_tokens_after_padding, afd_metadata)
 
     def _compute_cascade_attn_prefix_len(
         self,
@@ -1845,6 +1891,55 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                                                 dtype=torch.int32)
         return max_tokens_across_dp_cpu - num_tokens, num_tokens_after_padding
 
+    def get_afd_padding(
+            self, afd_tokens_start_loc: list[int],
+            afd_tokens_lens: list[int]) -> tuple[int, list[int], list[int]]:
+
+        afd_tokens_start_loc = list(afd_tokens_start_loc)
+        afd_tokens_lens = list(afd_tokens_lens)
+        original_max_end_loc = afd_tokens_start_loc[-1]
+
+        # 1. Stage count padding: pad to reach required num_stages by adding
+        # dummy stages.
+        if len(afd_tokens_start_loc) - 1 < self.num_stages:
+            missing = self.num_stages - (len(afd_tokens_start_loc) - 1)
+            for _ in range(missing):
+                afd_tokens_lens.append(0)
+
+        # 2. Stage-wise DP padding: pad each stage to max tokens across DP
+        # ranks.
+        if self.vllm_config.parallel_config.data_parallel_size > 1:
+            dp_size = self.vllm_config.parallel_config.data_parallel_size
+            dp_rank = self.vllm_config.parallel_config.data_parallel_rank
+            _, max_tokens_cpu = DPMetadata.num_stage_tokens_across_dp(
+                afd_tokens_lens, dp_size, dp_rank)
+            afd_tokens_lens = max_tokens_cpu.tolist()
+
+        # 3. If using CUDA graphs on attention server, pad each stage length
+        # up to the next configured cudagraph capture size so that each stage
+        # matches a captured graph size.
+        if (self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE
+                and self.afd_config and self.afd_config.is_attention_server):
+
+            def pad_to_capture_size(n: int) -> int:
+                for s in self.cudagraph_batch_sizes:
+                    if n <= s // self.num_stages:
+                        return s // self.num_stages
+                return n
+
+            afd_tokens_lens = [pad_to_capture_size(n) for n in afd_tokens_lens]
+
+        # Recompute start locations from lengths to ensure consistency after
+        # padding.
+        new_start_loc = [afd_tokens_start_loc[0]]
+        running = afd_tokens_start_loc[0]
+        for length in afd_tokens_lens:
+            running += length
+            new_start_loc.append(running)
+
+        num_pad = new_start_loc[-1] - original_max_end_loc
+        return num_pad, new_start_loc, afd_tokens_lens
+
     def get_local_padding(self, num_tokens_unpadded: int) -> int:
 
         num_tokens_padded = num_tokens_unpadded
@@ -2252,7 +2347,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 (attn_metadata, logits_indices, spec_decode_metadata,
                  num_scheduled_tokens_np, spec_decode_common_attn_metadata,
                  max_query_len, ubatch_slices, num_tokens_after_padding
-                 ) = self._prepare_inputs(scheduler_output)
+                 ,
+                 afd_metadata) = self._prepare_inputs(scheduler_output)
 
             (
                 num_scheduled_tokens,
@@ -2266,14 +2362,41 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             ) = self._preprocess(scheduler_output, intermediate_tensors,
                                  ubatch_slices, num_tokens_after_padding)
 
+            if afd_metadata:
+                # Padding for AFD
+                num_input_tokens = num_scheduled_tokens
+                (num_pad_afd, afd_tokens_start_loc,
+                 afd_tokens_lens) = self.get_afd_padding(
+                     afd_metadata.afd_tokens_start_loc,
+                     afd_metadata.afd_tokens_lens)
+                afd_metadata.afd_tokens_start_loc = afd_tokens_start_loc
+                afd_metadata.afd_tokens_lens = afd_tokens_lens
+                num_input_tokens += num_pad_afd
+                num_tokens_across_dp = None
+
+            if afd_metadata:
+                # Padding for AFD
+                num_input_tokens = num_scheduled_tokens
+                (num_pad_afd, afd_tokens_start_loc,
+                 afd_tokens_lens) = self.get_afd_padding(
+                     afd_metadata.afd_tokens_start_loc,
+                     afd_metadata.afd_tokens_lens)
+                afd_metadata.afd_tokens_start_loc = afd_tokens_start_loc
+                afd_metadata.afd_tokens_lens = afd_tokens_lens
+                num_input_tokens += num_pad_afd
+                num_tokens_across_dp = None
+
             uniform_decode = (max_query_len
                               == self.uniform_decode_query_len) and (
                                   num_scheduled_tokens
                                   == self.input_batch.num_reqs * max_query_len)
             batch_descriptor = BatchDescriptor(num_tokens=num_input_tokens,
                                                uniform_decode=uniform_decode)
-            cudagraph_runtime_mode, batch_descriptor = \
-                self.cudagraph_dispatcher.dispatch(batch_descriptor)
+            if self.afd_config:
+                cudagraph_runtime_mode = CUDAGraphMode.NONE
+            else:
+                cudagraph_runtime_mode, batch_descriptor = \
+                    self.cudagraph_dispatcher.dispatch(batch_descriptor)
 
         # This is currently to get around the assert in the DPMetadata
         # where it wants `num_tokens_across_dp` to align with `num_tokens`
@@ -2290,6 +2413,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 cudagraph_runtime_mode=cudagraph_runtime_mode,
                 batch_descriptor=batch_descriptor,
                 ubatch_slices=ubatch_slices,
+                afd_metadata=afd_metadata,
         ), record_function_or_nullcontext("Forward"),
               self.maybe_get_kv_connector_output(scheduler_output) as
               kv_connector_output):
@@ -2930,6 +3054,49 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
             CUDAGraphMode.NONE, CUDAGraphMode.PIECEWISE, CUDAGraphMode.FULL
         }
 
+        # AFD padding (stage-level alignment) before DP padding
+        if self.vllm_config.afd_config:
+            if num_tokens > self.vllm_config.afd_config.num_afd_stages:
+                num_tokens_per_stage = (
+                    num_tokens // self.vllm_config.afd_config.num_afd_stages)
+                max_num_reqs = self.scheduler_config.max_num_seqs
+                num_reqs = min(num_tokens, max_num_reqs)
+                num_reqs_per_stage = (
+                    num_reqs // self.vllm_config.afd_config.num_afd_stages)
+                afd_tokens_start_loc = [
+                    i * num_tokens_per_stage
+                    for i in range(self.vllm_config.afd_config.num_afd_stages +
+                                   1)
+                ]
+                afd_reqs_start_loc = [
+                    i * num_reqs_per_stage
+                    for i in range(self.vllm_config.afd_config.num_afd_stages +
+                                   1)
+                ]
+                afd_tokens_lens = [
+                    num_tokens_per_stage
+                    for _ in range(self.vllm_config.afd_config.num_afd_stages)
+                ]
+                afd_tokens_lens[-1] += num_tokens % num_tokens_per_stage
+                afd_tokens_start_loc[-1] = num_tokens
+                afd_metadata = AFDMetadata(
+                    afd_tokens_start_loc=afd_tokens_start_loc,
+                    afd_reqs_start_loc=afd_reqs_start_loc,
+                    afd_stage_idx=0,
+                    afd_connector=self.afd_connector,
+                    afd_tokens_lens=afd_tokens_lens,
+                )
+            else:
+                afd_metadata = AFDMetadata(
+                    afd_tokens_start_loc=list(range(num_tokens + 1)),
+                    afd_reqs_start_loc=list(range(num_tokens + 1)),
+                    afd_stage_idx=0,
+                    afd_connector=self.afd_connector,
+                    afd_tokens_lens=[1] * num_tokens,
+                )
+        else:
+            afd_metadata = None
+
         # If cudagraph_mode.decode_mode() == FULL and
         # cudagraph_mode.separate_routine(). This means that we are using
         # different graphs and/or modes for mixed prefill-decode batches vs.
@@ -3069,9 +3236,22 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     else:
                         assert type(attn_metadata) is dict
                         attn_metadata_i = attn_group.get_metadata_builder()\
-                            .build_for_cudagraph_capture(common_attn_metadata)
+                            .build_for_cudagraph_capture(common_attn_metadata,afd_metadata)
                         for layer_name in kv_cache_group_spec.layer_names:
                             attn_metadata[layer_name] = attn_metadata_i
+
+        if afd_metadata:
+            (num_afd_pad, afd_tokens_start_loc,
+             afd_tokens_lens) = self.get_afd_padding(
+                 afd_metadata.afd_tokens_start_loc,
+                 afd_metadata.afd_tokens_lens)
+            afd_metadata.afd_tokens_start_loc = afd_tokens_start_loc
+            afd_metadata.afd_tokens_lens = afd_tokens_lens
+            num_tokens += num_afd_pad
+            num_tokens_across_dp = None
+
+        num_pad, num_tokens_across_dp = self.get_dp_padding(num_tokens)
+        num_tokens += num_pad
 
         with self.maybe_dummy_run_with_lora(self.lora_config,
                                             num_scheduled_tokens, remove_lora):
@@ -3133,7 +3313,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     num_tokens_across_dp=num_tokens_across_dp,
                     cudagraph_runtime_mode=cudagraph_runtime_mode,
                     batch_descriptor=batch_descriptor,
-                    ubatch_slices=ubatch_slices):
+                    ubatch_slices=ubatch_slices,
+                    afd_metadata=afd_metadata):
                 outputs = self.model(
                     input_ids=input_ids,
                     positions=positions,
@@ -3421,34 +3602,53 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         # Capture the large shapes first so that the smaller shapes
         # can reuse the memory pool allocated for the large shapes.
         set_cudagraph_capturing_enabled(True)
-        with freeze_gc(), graph_capture(device=self.device):
-            cudagraph_mode = self.compilation_config.cudagraph_mode
-            assert cudagraph_mode is not None
+        # FIXME: hack for afd layerwise cg capture
+        if self.afd_config and self.afd_config.is_attention_server:
+            with freeze_gc():
+                if hasattr(self.model, "set_graph_capture_mode"):
+                    self.model.set_graph_capture_mode(True)
+                for num_tokens in tqdm(reversed(self.cudagraph_batch_sizes)):
+                    self._dummy_run(num_tokens,
+                                    cudagraph_runtime_mode=CUDAGraphMode.NONE,
+                                    force_attention=True,
+                                    uniform_decode=False,
+                                    skip_eplb=True,
+                                    remove_lora=True)
+                # Disable capture mode after prewarm
+                if hasattr(self.model, "set_graph_capture_mode"):
+                    self.model.set_graph_capture_mode(False)
+        else:
+            with freeze_gc(), graph_capture(device=self.device):
+                cudagraph_mode = self.compilation_config.cudagraph_mode
+
+                assert cudagraph_mode is not None
             if cudagraph_mode.mixed_mode() != CUDAGraphMode.NONE:
-                cudagraph_runtime_mode = cudagraph_mode.mixed_mode()
+                    cudagraph_runtime_mode = cudagraph_mode.mixed_mode()
 
-                compilation_cases = list(reversed(self.cudagraph_batch_sizes))
-                self._capture_cudagraphs(
-                    compilation_cases,
-                    cudagraph_runtime_mode=cudagraph_runtime_mode,
-                    uniform_decode=False)
+                    compilation_cases = list(
+                        reversed(self.cudagraph_batch_sizes))
+                    self._capture_cudagraphs(
+                        compilation_cases,
+                        cudagraph_runtime_mode=cudagraph_runtime_mode,
+                        uniform_decode=False)
 
-            # Capture full cudagraph for uniform decode batches if we
-            # don't already have full mixed prefill-decode cudagraphs.
-            if cudagraph_mode.decode_mode() == CUDAGraphMode.FULL and \
-                cudagraph_mode.separate_routine():
-                max_num_tokens = self.scheduler_config.max_num_seqs * \
-                        self.uniform_decode_query_len
-                decode_cudagraph_batch_sizes = [
-                    x for x in self.cudagraph_batch_sizes if
-                    x <= max_num_tokens and x >= self.uniform_decode_query_len
-                ]
-                compilation_cases_decode = list(
-                    reversed(decode_cudagraph_batch_sizes))
-                self._capture_cudagraphs(
-                    compilation_cases=compilation_cases_decode,
-                    cudagraph_runtime_mode=CUDAGraphMode.FULL,
-                    uniform_decode=True)
+                # Capture full cudagraph for uniform decode batches if we
+                # don't already have full mixed prefill-decode cudagraphs.
+                if cudagraph_mode.decode_mode() == CUDAGraphMode.FULL and \
+                    cudagraph_mode.separate_routine():
+                    max_num_tokens = self.scheduler_config.max_num_seqs * \
+                            self.uniform_decode_query_len
+                    decode_cudagraph_batch_sizes = [
+                        x for x in self.cudagraph_batch_sizes
+                        if x <= max_num_tokens
+                        and x >= self.uniform_decode_query_len
+                    ]
+                    compilation_cases_decode = list(
+                        reversed(decode_cudagraph_batch_sizes))
+                    self._capture_cudagraphs(
+                        compilation_cases=compilation_cases_decode,
+                        cudagraph_runtime_mode=CUDAGraphMode.FULL,
+                        uniform_decode=True)
 
         # Disable cudagraph capturing globally, so any unexpected cudagraph
         # capturing will be detected and raise an error after here.
@@ -3991,6 +4191,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     " the softmax lse for decode, but the impl "
                     f"{layer.impl.__class__.__name__} "
                     "does not return the softmax lse for decode.")
+
+    def initialize_afd_connector(self) -> None:
+        """Initialize AFD connector if available."""
+        if hasattr(self, 'afd_connector') and self.afd_connector:
+            self.afd_connector.init_afd_connector()
 
     def may_add_encoder_only_layers_to_kv_cache_config(self) -> None:
         """
