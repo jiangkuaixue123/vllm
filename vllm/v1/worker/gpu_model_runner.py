@@ -1295,7 +1295,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     attn_metadata_i = builder.build(
                         common_prefix_len=common_prefix_len,
                         common_attn_metadata=common_attn_metadata,
-                        afd_metadata=afd_metadata,
+                        # TODO:run test 
+                        #afd_metadata=afd_metadata,
                         **extra_attn_metadata_args)
                     for layer_name in attn_group.layer_names:
                         attn_metadata[layer_name] = attn_metadata_i
@@ -2398,6 +2399,11 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 cudagraph_runtime_mode, batch_descriptor = \
                     self.cudagraph_dispatcher.dispatch(batch_descriptor)
 
+
+        if afd_metadata == None:
+            afd_metadata = AFDMetadata(
+                0,0,0,self.afd_connector,0
+            )
         # This is currently to get around the assert in the DPMetadata
         # where it wants `num_tokens_across_dp` to align with `num_tokens`
         if ubatch_slices is not None:

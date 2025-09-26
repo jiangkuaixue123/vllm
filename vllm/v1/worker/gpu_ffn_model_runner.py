@@ -112,7 +112,9 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         # mode
         current_layer_idx = self._get_current_layer_idx()
         try:
-            hidden_states, metadata = self.connector.recv_attn_output()
+            hidden_states, _ = self.connector.recv_attn_output()
+            logger.info("*"*50)
+            logger.info(f"layer {current_layer_idx} moe recv hidden states type:{type(hidden_states)}, shape:{hidden_states.shape}")
             num_tokens = hidden_states.shape[0]
 
             # Try to use CUDA graph if available
@@ -131,7 +133,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                     rank_ffn_output = self._execute_eager_mode(
                         hidden_states, current_layer_idx)
 
-            self.connector.send_ffn_output(rank_ffn_output, metadata)
+            self.connector.send_ffn_output(rank_ffn_output, None)
         except Exception as e:
             raise ValueError(
                 f"Error computing FFN for layer {current_layer_idx}: {e}"
