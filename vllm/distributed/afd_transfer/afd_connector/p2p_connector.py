@@ -55,13 +55,13 @@ class P2PAFDConnector(AFDConnectorBase):
 
         logger.info(
             f"world_size = {ffn_size + attn_size}, world_rank = {world_rank}")
+        # TODO : get backend to replace hardcode
         afd_pg = init_afd_process_group(
-            backend="nccl",
+            backend="hccl",
             init_method=f"tcp://127.0.0.1:29500",
             world_size=ffn_size + attn_size,
             rank=world_rank,
-            group_name="afd",
-            timeout=timedelta(minutes=2),
+            group_name="afd"
         )
         ffn_ranks = [i for i in range(ffn_size, ffn_size + attn_size)]
         attn_ranks = [i for i in range(attn_size)]
@@ -75,7 +75,7 @@ class P2PAFDConnector(AFDConnectorBase):
                 sub_group_ranks.append(ranks)
             self.process_group = init_model_parallel_group(sub_group_ranks,
                                                  self.rank,
-                                                 backend="nccl",
+                                                 backend="hccl",
                                                  group_name="ae")
 
         logger.info("p2p connector initialized")

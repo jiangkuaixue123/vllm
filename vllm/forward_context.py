@@ -358,7 +358,8 @@ def create_forward_context(
         dp_metadata: Optional[DPMetadata] = None,
         cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
         batch_descriptor: Optional[BatchDescriptor] = None,
-        ubatch_slices: Optional[UBatchSlices] = None):
+        ubatch_slices: Optional[UBatchSlices] = None,
+        afd_metadata:Optional[AFDMetadata]= None):
     return ForwardContext(no_compile_layers=vllm_config.compilation_config.
                           static_forward_context,
                           virtual_engine=virtual_engine,
@@ -366,7 +367,8 @@ def create_forward_context(
                           dp_metadata=dp_metadata,
                           cudagraph_runtime_mode=cudagraph_runtime_mode,
                           batch_descriptor=batch_descriptor,
-                          ubatch_slices=ubatch_slices)
+                          ubatch_slices=ubatch_slices,
+                          afd_metadata=afd_metadata)
 
 
 @contextmanager
@@ -413,9 +415,9 @@ def set_forward_context(
 
     forward_context = create_forward_context(attn_metadata, vllm_config,
                                              virtual_engine, dp_metadata,
-                                             afd_metadata=afd_metadata,
                                              cudagraph_runtime_mode,
-                                             batch_descriptor, ubatch_slices)
+                                             batch_descriptor, ubatch_slices,
+                                             afd_metadata=afd_metadata)
 
     try:
         with override_forward_context(forward_context):

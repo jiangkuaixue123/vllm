@@ -898,7 +898,7 @@ class GroupCoordinator:
 
 
 def init_afd_process_group(
-    backend: Union[str, Backend] = None,
+    backend: str = "nccl",
     init_method: Optional[str] = None,
     timeout: Optional[timedelta] = None,
     world_size: int = -1,

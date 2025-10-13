@@ -23,9 +23,9 @@ from typing_extensions import TypeIs, deprecated
 import vllm.envs as envs
 from vllm.config import (AFDConfig, BlockSize, CacheConfig, CacheDType,
                          CompilationConfig, ConfigType, ConvertOption,
-                         DecodingConfig, DetailedTraceModules, Device,
+                         DetailedTraceModules, Device,
                          DeviceConfig, DistributedExecutorBackend, EPLBConfig,
-                         GuidedDecodingBackend, HfOverrides, KVEventsConfig,
+                         HfOverrides, KVEventsConfig,
                          KVTransferConfig, LoadConfig, LogprobsMode,
                          LoRAConfig, MambaDType, MMEncoderTPMode, ModelConfig,
                          ModelDType, ObservabilityConfig, ParallelConfig,
