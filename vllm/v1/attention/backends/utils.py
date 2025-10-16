@@ -17,6 +17,7 @@ from vllm.utils import cdiv
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionImpl
+    from vllm.forward_context import AFDMetadata
     from vllm.v1.core.sched.output import SchedulerOutput
     from vllm.v1.worker.gpu_input_batch import InputBatch
 

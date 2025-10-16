@@ -316,6 +316,13 @@ class Attention(nn.Module, AttentionLayerBase):
                 attn_metadata = forward_context.attn_metadata
                 if isinstance(attn_metadata, dict):
                     attn_metadata = attn_metadata[self.layer_name]
+                    afd_metadata = forward_context.afd_metadata
+                    if afd_metadata is not None:
+                        afd_stage_idx = afd_metadata.afd_stage_idx
+                        if afd_stage_idx < len(attn_metadata):
+                            attn_metadata = attn_metadata[afd_stage_idx]
+                        else:
+                            attn_metadata = None  # padding
                 self_kv_cache = self.kv_cache[forward_context.virtual_engine]
                 self.impl.forward(self,
                                   query,
@@ -334,6 +341,13 @@ class Attention(nn.Module, AttentionLayerBase):
                 attn_metadata = forward_context.attn_metadata
                 if isinstance(attn_metadata, dict):
                     attn_metadata = attn_metadata[self.layer_name]
+                    afd_metadata = forward_context.afd_metadata
+                    if afd_metadata is not None:
+                        afd_stage_idx = afd_metadata.afd_stage_idx
+                        if afd_stage_idx < len(attn_metadata):
+                            attn_metadata = attn_metadata[afd_stage_idx]
+                        else:
+                            attn_metadata = None  # padding
                 self_kv_cache = self.kv_cache[forward_context.virtual_engine]
                 return self.impl.forward(self, query, key, value,
                                          self_kv_cache, attn_metadata)
@@ -550,8 +564,53 @@ def maybe_save_kv_layer_to_connector(
     if attn_metadata is None:
         return
     assert isinstance(attn_metadata, dict)
-    connector.save_kv_layer(layer_name, kv_cache_layer,
-                            attn_metadata[layer_name])
+    if forward_context.afd_metadata:
+        afd_stage_idx = forward_context.afd_metadata.afd_stage_idx
+        if afd_stage_idx < len(attn_metadata[layer_name]):
+            attn_metadata_to_save = attn_metadata[layer_name][afd_stage_idx]
+        else:
+            attn_metadata_to_save = None  # padding
+    else:
+        attn_metadata_to_save = attn_metadata[layer_name]
+    connector.save_kv_layer(layer_name, kv_cache_layer, attn_metadata_to_save)
+
+
+def maybe_calc_kv_scales(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    layer_name: str,
+) -> None:
+    forward_context: ForwardContext = get_forward_context()
+    attn_metadata = forward_context.attn_metadata
+
+    if isinstance(attn_metadata, dict):
+        attn_metadata = attn_metadata[layer_name]
+
+    if attn_metadata is None or not getattr(
+        attn_metadata, "enable_kv_scales_calculation", False
+    ):
+        return
+
+    self = forward_context.no_compile_layers[layer_name]
+    self.calc_kv_scales(query, key, value)
+
+
+def maybe_calc_kv_scales_fake(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    layer_name: str,
+) -> None:
+    return
+
+
+direct_register_custom_op(
+    op_name="maybe_calc_kv_scales",
+    op_func=maybe_calc_kv_scales,
+    mutates_args=["query", "key", "value"],
+    fake_impl=maybe_calc_kv_scales_fake,
+)
 
 
 def unified_attention(
@@ -566,6 +625,12 @@ def unified_attention(
     attn_metadata = forward_context.attn_metadata
     if isinstance(attn_metadata, dict):
         attn_metadata = attn_metadata[layer_name]
+        if forward_context.afd_metadata:
+            afd_stage_idx = forward_context.afd_metadata.afd_stage_idx
+            if afd_stage_idx < len(attn_metadata):
+                attn_metadata = attn_metadata[afd_stage_idx]
+            else:
+                attn_metadata = None  # padding
     self = forward_context.no_compile_layers[layer_name]
     kv_cache = self.kv_cache[forward_context.virtual_engine]
     output = self.impl.forward(self, query, key, value, kv_cache,
@@ -604,8 +669,19 @@ def unified_attention_with_output(
     wait_for_kv_layer_from_connector(layer_name)
     forward_context: ForwardContext = get_forward_context()
     attn_metadata = forward_context.attn_metadata
-    if isinstance(attn_metadata, dict):
+    num_stages = len(forward_context.afd_metadata.afd_tokens_start_loc) - 1
+    if isinstance(attn_metadata, dict) and num_stages > 1:
         attn_metadata = attn_metadata[layer_name]
+        if forward_context.afd_metadata:
+            afd_stage_idx = forward_context.afd_metadata.afd_stage_idx
+            logger.info("***********attn_metadata*************")
+            print(attn_metadata)
+            if afd_stage_idx < len(attn_metadata):
+                attn_metadata = attn_metadata[afd_stage_idx]
+            else:
+                attn_metadata = None  # padding
+    else:
+        attn_metadata = attn_metadata[layer_name] if attn_metadata != None else None
     self = forward_context.no_compile_layers[layer_name]
     kv_cache = self.kv_cache[forward_context.virtual_engine]
     self.impl.forward(self,
