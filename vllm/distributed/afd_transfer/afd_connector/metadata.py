@@ -40,6 +40,9 @@ class AFDConnectorMetadata:
     timestamp: Optional[float] = None
     """ascend ffn need forward data"""
     ffn_need_forward_data: Optional[FFNNeedForwardData] = None
+    topk_weights: Optional[torch.Tensor] = None
+    topk_ids: Optional[torch.Tensor] = None
+    row_idx: Optional[torch.Tensor] = None
 
     def __post_init__(self):
         """Validate data consistency."""
@@ -77,7 +80,10 @@ class AFDConnectorMetadata:
             dtype: torch.dtype,
             device: torch.device,
             request_id: Optional[str] = None,
-            ffn_need_forward_data:Optional[FFNNeedForwardData] = None) -> "AFDConnectorMetadata":
+            ffn_need_forward_data:Optional[FFNNeedForwardData] = None,
+            topk_weights: Optional[torch.Tensor] = None,
+            topk_ids: Optional[torch.Tensor] = None,
+            row_idx: Optional[torch.Tensor] = None) -> "AFDConnectorMetadata":
         """Create metadata for attention side (single sequence)."""
         return cls(layer_idx=layer_idx,
                    stage_idx=stage_idx,
@@ -86,7 +92,11 @@ class AFDConnectorMetadata:
                    device=device,
                    request_id=request_id,
                    ffn_need_forward_data = ffn_need_forward_data,
-                   timestamp=time.time())
+                   timestamp=time.time(),
+                   topk_weights = topk_weights,
+                   topk_ids = topk_ids,
+                   row_idx = row_idx
+                   )
 
     @classmethod
     def create_ffn_metadata(

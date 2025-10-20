@@ -58,7 +58,7 @@ class P2PAFDConnector(AFDConnectorBase):
         # TODO : get backend to replace hardcode
         afd_pg = init_afd_process_group(
             backend="hccl",
-            init_method=f"tcp://127.0.0.1:29500",
+            init_method=f"tcp://127.0.0.1:29509",
             world_size=ffn_size + attn_size,
             rank=world_rank,
             group_name="afd"

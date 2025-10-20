@@ -141,6 +141,7 @@ class DeepseekV2MoE(nn.Module):
             raise ValueError(f"Unsupported activation: {config.hidden_act}. "
                              "Only silu is supported for now.")
 
+        #----------- 这部分要加下判断，只在不开启AFD的时候加载
         self.gate = ReplicatedLinear(config.hidden_size,
                                      config.n_routed_experts,
                                      bias=False,
@@ -229,15 +230,18 @@ class DeepseekV2MoE(nn.Module):
         num_tokens, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
 
+        # ---------------------
         # Chunk the hidden states so they aren't replicated across TP ranks.
         # This avoids duplicate computation in self.experts.
         # TODO: We can replace the all_reduce at the end of attn with a
         # reduce_scatter instead of chunking here.
+
         if self.is_sequence_parallel:
             hidden_states = sequence_parallel_chunk(hidden_states)
 
         # router_logits: (num_tokens, n_experts)
         router_logits, _ = self.gate(hidden_states)
+        # ---------------------
 
         fused_moe_out = self.experts(hidden_states=hidden_states,
                                      router_logits=router_logits)
@@ -270,6 +274,12 @@ class DeepseekV2MoE(nn.Module):
                     final_hidden_states))
 
         return final_hidden_states.view(num_tokens, hidden_dim)
+
+    def afd_forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # 这里是开了afd的forward，里面没东西，还得想想怎么同时接p2p和m2n算子……
+        # 这样吧，这里直接调FUSEDMOE的东西，然后再加个是否需要routing的判断，来判断不同的分支
+        return self.experts.afd_ffn_compute()
+        # pass
 
 
 def yarn_get_mscale(scale: float = 1, mscale: float = 1) -> float:
@@ -631,6 +641,35 @@ class DeepseekV2DecoderLayer(nn.Module):
                     quant_config=quant_config,
                     prefix=f"{prefix}.mlp",
                 )
+
+        if self.role is not None and self.role == "attention":
+            # 这里增加gating的初始化
+            self.gate = ReplicatedLinear(config.hidden_size,
+                                     config.n_routed_experts,
+                                     bias=False,
+                                     quant_config=None,
+                                     prefix=f"{prefix}.gate")
+            if config.topk_method == "noaux_tc":
+                self.gate.e_score_correction_bias = nn.Parameter(
+                    torch.empty(config.n_routed_experts, dtype=torch.float32))
+            else:
+                self.gate.e_score_correction_bias = None
+
+            # Load balancing settings.
+            eplb_config = parallel_config.eplb_config
+            self.enable_eplb = parallel_config.enable_eplb
+
+            self.n_redundant_experts = eplb_config.num_redundant_experts
+            self.n_logical_experts = self.n_routed_experts
+            self.n_physical_experts = (self.n_logical_experts +
+                                    self.n_redundant_experts)
+            self.n_local_physical_experts = self.n_physical_experts // self.ep_size
+
+            self.physical_expert_start = (self.ep_rank *
+                                        self.n_local_physical_experts)
+            self.physical_expert_end = (self.physical_expert_start +
+                                        self.n_local_physical_experts)
+
         self.input_layernorm = RMSNorm(config.hidden_size,
                                        eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size,
@@ -680,15 +719,28 @@ class DeepseekV2DecoderLayer(nn.Module):
             with_prefill = forward_ctx.with_prefill
             num_actual_tokens = None
             ffn_need_forward_data = FFNNeedForwardData(moe_comm_type,num_tokens,with_prefill,num_actual_tokens)
-            
+
+            # if self.is_sequence_parallel:
+            #     hidden_states = sequence_parallel_chunk(hidden_states)
+
+            # router_logits: (num_tokens, n_experts)
+            router_logits, _ = self.gate(hidden_states)
+            # 这里增加调用gating的逻辑，到时候要一并传输hiddenstates，这里直接用fused_moe里的函数，不用把函数拿出来
+            topk_weights, topk_ids, row_idx = FusedMoE.gating(hidden_states=hidden_states, 
+                                                    router_logits=router_logits)
+
             metadata = AFDConnectorMetadata.create_attention_metadata(
                 layer_idx=self.layer_idx,
                 stage_idx=0,
                 seq_len=hidden_states.shape[0],
                 dtype=hidden_states.dtype,
                 device=hidden_states.device,
-                ffn_need_forward_data=ffn_need_forward_data
+                ffn_need_forward_data=ffn_need_forward_data,
+                topk_weights = topk_weights,
+                topk_ids = topk_ids,
+                row_idx = row_idx
             )
+
             afd_connector.send_attn_output(hidden_states, metadata)
             hidden_states, _ = afd_connector.recv_ffn_output()
 
@@ -753,7 +805,8 @@ class DeepseekV2DecoderLayer(nn.Module):
         assert self.role == "ffn"
         # afd_connector = get_afd_connector()
         # hidden_states = afd_connector.recv_attn_output()
-        hidden_states = self.mlp(hidden_states)
+        # hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp.afd_forward(hidden_states)
         if isinstance(self.mlp,
                       DeepseekV2MLP) and hidden_states.dtype == torch.float16:
             # Fix FP16 overflow
