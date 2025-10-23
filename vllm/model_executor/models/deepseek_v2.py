@@ -227,6 +227,7 @@ class DeepseekV2MoE(nn.Module):
             )
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        print("DeepseekV2MoE forward")
         num_tokens, hidden_dim = hidden_states.shape
         hidden_states = hidden_states.view(-1, hidden_dim)
 
@@ -275,10 +276,21 @@ class DeepseekV2MoE(nn.Module):
 
         return final_hidden_states.view(num_tokens, hidden_dim)
 
-    def afd_forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def afd_forward(
+        self, 
+        hidden_states: torch.Tensor,
+        topk_weights: Optional[torch.Tensor] = None,
+        topk_ids: Optional[torch.Tensor] = None,
+        row_idx: Optional[torch.Tensor] = None,
+        ) -> torch.Tensor:
         # 这里是开了afd的forward，里面没东西，还得想想怎么同时接p2p和m2n算子……
         # 这样吧，这里直接调FUSEDMOE的东西，然后再加个是否需要routing的判断，来判断不同的分支
-        return self.experts.afd_ffn_compute()
+        return self.experts.afd_ffn_compute(
+            layer=self.experts, 
+            hidden_states=hidden_states, 
+            topk_weights=topk_weights, 
+            topk_ids=topk_ids, 
+            row_idx=row_idx)
         # pass
 
 
@@ -599,6 +611,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         # with the layer's index.
         layer_idx = int(prefix.split(sep='.')[-1])
         self.layer_idx = layer_idx
+        self.first_k_dense_replace = config.first_k_dense_replace
         if model_config.use_mla:
             attn_cls = DeepseekV2MLAAttention
         else:
@@ -643,6 +656,16 @@ class DeepseekV2DecoderLayer(nn.Module):
                 )
 
         if self.role is not None and self.role == "attention":
+            if layer_idx < config.first_k_dense_replace:
+                print('开始加载attn侧的mlp')
+                self.mlp = DeepseekV2MLP(
+                    hidden_size=config.hidden_size,
+                    intermediate_size=config.intermediate_size,
+                    hidden_act=config.hidden_act,
+                    quant_config=quant_config,
+                    prefix=f"{prefix}.mlp",
+                )
+
             # 这里增加gating的初始化
             self.gate = ReplicatedLinear(config.hidden_size,
                                      config.n_routed_experts,
@@ -712,7 +735,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
-        if self.role is not None:
+        if self.role is not None and self.layer_idx >= self.first_k_dense_replace:
             # --------- ffn need data
             moe_comm_type = forward_ctx.moe_comm_type
             num_tokens = hidden_states.shape[0]
@@ -726,7 +749,7 @@ class DeepseekV2DecoderLayer(nn.Module):
             # router_logits: (num_tokens, n_experts)
             router_logits, _ = self.gate(hidden_states)
             # 这里增加调用gating的逻辑，到时候要一并传输hiddenstates，这里直接用fused_moe里的函数，不用把函数拿出来
-            topk_weights, topk_ids, row_idx = FusedMoE.gating(hidden_states=hidden_states, 
+            topk_weights, topk_ids, row_idx = self.afd_gating.gating(hidden_states=hidden_states, 
                                                     router_logits=router_logits)
 
             metadata = AFDConnectorMetadata.create_attention_metadata(
@@ -801,12 +824,25 @@ class DeepseekV2DecoderLayer(nn.Module):
         #     )['hidden_states']
         return hidden_states, residual
 
-    def compute_ffn_output(self, hidden_states):
+    def compute_ffn_output(
+        self, 
+        hidden_states,
+        topk_weights: Optional[torch.Tensor] = None,
+        topk_ids: Optional[torch.Tensor] = None,
+        row_idx: Optional[torch.Tensor] = None,
+        ):
+        print("compute_ffn_output in decode layer")
+        if self.layer_idx < self.first_k_dense_replace:
+            print("not moe")
+            return hidden_states
         assert self.role == "ffn"
         # afd_connector = get_afd_connector()
         # hidden_states = afd_connector.recv_attn_output()
-        # hidden_states = self.mlp(hidden_states)
-        hidden_states = self.mlp.afd_forward(hidden_states)
+        hidden_states = self.mlp(hidden_states)
+        # hidden_states = self.mlp.afd_forward(hidden_states, 
+        #                             topk_weights,
+        #                             topk_ids,
+        #                             row_idx)
         if isinstance(self.mlp,
                       DeepseekV2MLP) and hidden_states.dtype == torch.float16:
             # Fix FP16 overflow
@@ -890,9 +926,16 @@ class DeepseekV2Model(nn.Module):
     def compute_ffn_output(
         self,
         hidden_states,
-        layer_idx
+        layer_idx,
+        topk_weights: Optional[torch.Tensor] = None,
+        topk_ids: Optional[torch.Tensor] = None,
+        row_idx: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
-        hidden_states = self.layers[layer_idx].compute_ffn_output(hidden_states)
+        print("compute_ffn_output in DeepseekV2Model")
+        hidden_states = self.layers[layer_idx].compute_ffn_output(hidden_states, 
+                                                                    topk_weights,
+                                                                    topk_ids,
+                                                                    row_idx)
         #for layer in islice(self.layers, self.start_layer, self.end_layer):
         #    hidden_states = layer.compute_ffn_output(hidden_states)
         return hidden_states
@@ -1023,8 +1066,18 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts,
     def compute_ffn_output(
         self,
         current_layer_idx,
-        hidden_states) -> Union[torch.Tensor, IntermediateTensors]:
-        hidden_states = self.model.compute_ffn_output(hidden_states, current_layer_idx)
+        hidden_states,
+        topk_weights: Optional[torch.Tensor] = None,
+        topk_ids: Optional[torch.Tensor] = None,
+        row_idx: Optional[torch.Tensor] = None,
+        ) -> Union[torch.Tensor, IntermediateTensors]:
+        print("compute_ffn_output in DeepseekV2ForCausalLM")
+        hidden_states = self.model.compute_ffn_output(
+                                    hidden_states, 
+                                    current_layer_idx, 
+                                    topk_weights,
+                                    topk_ids,
+                                    row_idx)
         return hidden_states
 
 
@@ -1062,6 +1115,8 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts,
         params_dict = dict(self.named_parameters())
         loaded_params: set[str] = set()
         for name, loaded_weight in weights:
+            if 'mlp.gate.' in name:
+                name = name.replace("mlp.gate.", "gate.")
             if "rotary_emb.inv_freq" in name:
                 continue
             if self.afd_config.afd_role == "attention" and self.is_moe_weight(name):
@@ -1168,7 +1223,13 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts,
         return loaded_params
 
     def is_moe_weight(self, name):
-        if "shared_experts" in name or "experts" in name or "gate" in name \
+        # if "shared_experts" in name or "experts" in name or "gate" in name \
+        #     or "up" in name or "down" in name:
+        #     return True
+        # return False
+        if 'mlp.gate_proj.weight' in name or 'mlp.up_proj.weight' in name or 'mlp.down_proj.weight' in name:
+            return False
+        if "shared_experts" in name or "experts" in name or "gate_" in name\
             or "up" in name or "down" in name:
             return True
         return False
