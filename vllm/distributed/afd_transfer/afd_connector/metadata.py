@@ -5,11 +5,13 @@ FFN workers."""
 
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Any, Dict
 
 import torch
 from vllm_ascend.ascend_forward_context import MoECommType
+from dataclasses import dataclass, field
 
+#TODO(yxj):move to AFDExtraFields
 class FFNNeedForwardData:
 
     def __init__(self,
@@ -23,6 +25,16 @@ class FFNNeedForwardData:
         self.with_prefill = with_prefill
         self.total_num_scheduled_tokens = total_num_scheduled_tokens
 
+
+        
+@dataclass
+class AFDExtraFields:
+    """Additional field specifically for storing AFDconnectors"""
+    custom_fields: Dict[str, Any] = field(default_factory=dict)
+
+    def __init__(self, **kwargs):
+        self.custom_fields.update(kwargs)
+        
 @dataclass
 class AFDConnectorMetadata:
     """Lightweight AFD metadata containing core information needed for
@@ -43,7 +55,9 @@ class AFDConnectorMetadata:
     topk_weights: Optional[torch.Tensor] = None
     topk_ids: Optional[torch.Tensor] = None
     row_idx: Optional[torch.Tensor] = None
-
+    # extra_fields
+    extra_fields: AFDExtraFields = field(default_factory=AFDExtraFields)
+    
     def __post_init__(self):
         """Validate data consistency."""
         if not self.seq_lens:
@@ -81,6 +95,7 @@ class AFDConnectorMetadata:
             device: torch.device,
             request_id: Optional[str] = None,
             ffn_need_forward_data:Optional[FFNNeedForwardData] = None,
+            extra_fields: AFDExtraFields = field(default_factory=AFDExtraFields),
             topk_weights: Optional[torch.Tensor] = None,
             topk_ids: Optional[torch.Tensor] = None,
             row_idx: Optional[torch.Tensor] = None) -> "AFDConnectorMetadata":
@@ -95,7 +110,8 @@ class AFDConnectorMetadata:
                    timestamp=time.time(),
                    topk_weights = topk_weights,
                    topk_ids = topk_ids,
-                   row_idx = row_idx
+                   row_idx = row_idx,
+                   extra_fields = extra_fields
                    )
 
     @classmethod

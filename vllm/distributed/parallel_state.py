@@ -896,6 +896,17 @@ class GroupCoordinator:
         else:
             return hidden_states
 
+class DefaultProcessGroupSwitcher:
+
+    def __init__(self, default_group, new_default_group):
+        self.default_group = default_group
+        self.new_default_group = new_default_group
+
+    def __enter__(self):
+        _update_default_pg(self.new_default_group)
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        _update_default_pg(self.default_group)
 
 def init_afd_process_group(
     backend: str = "nccl",
