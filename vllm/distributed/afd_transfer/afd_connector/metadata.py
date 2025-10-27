@@ -26,6 +26,21 @@ class FFNNeedForwardData:
         self.total_num_scheduled_tokens = total_num_scheduled_tokens
 
 
+@dataclass
+class M2NAFDConnectorMetadata:
+    def __init__(self):
+        self.topk_idx = None
+        self.topk_weights = None
+        self.moe_expert_num = 0
+        self.scale = None
+        self.handle = None
+        self.quant_mode = 0
+        self.aiv_num = 0
+        self.batch_size = 0
+        self.h = 0
+        self.k = 0
+        self.expert_token_nums_type = 0
+        self.expand_x_type = torch.float16
         
 @dataclass
 class AFDExtraFields:
@@ -52,6 +67,7 @@ class AFDConnectorMetadata:
     timestamp: Optional[float] = None
     """ascend ffn need forward data"""
     ffn_need_forward_data: Optional[FFNNeedForwardData] = None
+    m2n_afdconnector_data: Optional[M2NAFDConnectorMetadata] = None
     topk_weights: Optional[torch.Tensor] = None
     topk_ids: Optional[torch.Tensor] = None
     row_idx: Optional[torch.Tensor] = None
@@ -95,6 +111,7 @@ class AFDConnectorMetadata:
             device: torch.device,
             request_id: Optional[str] = None,
             ffn_need_forward_data:Optional[FFNNeedForwardData] = None,
+            m2n_afdconnector_data:Optional[M2NAFDConnectorMetadata] = None,
             # extra_fields: AFDExtraFields = field(default_factory=AFDExtraFields),
             topk_weights: Optional[torch.Tensor] = None,
             topk_ids: Optional[torch.Tensor] = None,
@@ -107,6 +124,7 @@ class AFDConnectorMetadata:
                    device=device,
                    request_id=request_id,
                    ffn_need_forward_data = ffn_need_forward_data,
+                   m2n_afdconnector_data = m2n_afdconnector_data,
                    timestamp=time.time(),
                    topk_weights = topk_weights,
                    topk_ids = topk_ids,
