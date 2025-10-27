@@ -46,7 +46,7 @@ class P2PAFDConnector(AFDConnectorBase):
         # TODO : get backend to replace hardcode
         afd_pg = init_afd_process_group(
             backend="hccl",
-            init_method=f"tcp://127.0.0.1:29509",
+            init_method=f"tcp://127.0.0.1:29501",
             world_size=ffn_size + attn_size,
             rank=world_rank,
             group_name="afd"
@@ -80,7 +80,13 @@ class P2PAFDConnector(AFDConnectorBase):
 
 
     def send_attn_output(
-        self, hidden_states: torch.Tensor, metadata: AFDConnectorMetadata
+        self, 
+        hidden_states: torch.Tensor, 
+        router_logits: torch.Tensor, 
+        topk_weights: torch.Tensor, 
+        topk_ids: torch.Tensor, 
+        row_idx: torch.Tensor, 
+        metadata: AFDConnectorMetadata
     ):
         """
         This method will be called by the ATTN side.
@@ -92,6 +98,10 @@ class P2PAFDConnector(AFDConnectorBase):
         intermediate_tensors = IntermediateTensors(
             {
                 "hidden_states": hidden_states,
+                "router_logits": router_logits,
+                "topk_weights": topk_weights,
+                "topk_ids": topk_ids,
+                "row_idx": row_idx,
             }
         )
         try:
@@ -120,7 +130,7 @@ class P2PAFDConnector(AFDConnectorBase):
         # = self.process_group.recv_tensor_dict(
         #    all_gather_group=None,
         #)
-        return intermediate_tensors["hidden_states"], metadata
+        return intermediate_tensors["hidden_states"],intermediate_tensors["router_logits"],intermediate_tensors["topk_weights"],intermediate_tensors["topk_ids"],intermediate_tensors["row_idx"], metadata
 
     # -------------------------------------------------------------------------
     #                                attn <- ffn

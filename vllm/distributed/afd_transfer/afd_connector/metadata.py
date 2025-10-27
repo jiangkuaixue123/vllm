@@ -56,7 +56,7 @@ class AFDConnectorMetadata:
     topk_ids: Optional[torch.Tensor] = None
     row_idx: Optional[torch.Tensor] = None
     # extra_fields
-    extra_fields: AFDExtraFields = field(default_factory=AFDExtraFields)
+    # extra_fields: AFDExtraFields = field(default_factory=AFDExtraFields)
     
     def __post_init__(self):
         """Validate data consistency."""
@@ -95,7 +95,7 @@ class AFDConnectorMetadata:
             device: torch.device,
             request_id: Optional[str] = None,
             ffn_need_forward_data:Optional[FFNNeedForwardData] = None,
-            extra_fields: AFDExtraFields = field(default_factory=AFDExtraFields),
+            # extra_fields: AFDExtraFields = field(default_factory=AFDExtraFields),
             topk_weights: Optional[torch.Tensor] = None,
             topk_ids: Optional[torch.Tensor] = None,
             row_idx: Optional[torch.Tensor] = None) -> "AFDConnectorMetadata":
@@ -111,7 +111,7 @@ class AFDConnectorMetadata:
                    topk_weights = topk_weights,
                    topk_ids = topk_ids,
                    row_idx = row_idx,
-                   extra_fields = extra_fields
+                #    extra_fields = extra_fields
                    )
 
     @classmethod
