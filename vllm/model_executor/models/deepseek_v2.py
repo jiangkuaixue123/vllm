@@ -819,21 +819,20 @@ class DeepseekV2DecoderLayer(nn.Module):
                 use_grouped_topk=False,
                 renormalize=True,
                 )
-
-            topk_weights = topk_weights.to(hidden_states.dtype)
-            # this is a naive implementation for experts load balance so as
-            # to avoid accumulating too much tokens on a single rank.
-            # currently it is only activated when doing profile runs.
-            # if True and not self.use_aclgraph:
-            #     topk_ids = torch.randint_like(topk_ids, 0, 27)
+            print(f'topk_weights dtype is {topk_weights.dtype}')
+            topk_weights = topk_weights.to(torch.float)
+            print(f'topk_weights after dtype is {topk_weights.dtype}')
+            print(f'hidden_states shape dtype is {hidden_states.shape}')
             is_m2n = True
             if is_m2n:
-                m2n_afdconnector_data = M2NAFDConnectorMetadata(
-                    moe_comm_type,
-                    num_tokens,
-                    with_prefill,
-                    num_actual_tokens) 
-               
+                m2n_afdconnector_data = M2NAFDConnectorMetadata() 
+                m2n_afdconnector_data.topk_idx = topk_ids
+                m2n_afdconnector_data.topk_weights = topk_weights
+                m2n_afdconnector_data.moe_expert_num = 64
+                m2n_afdconnector_data.quant_mode = 0
+                m2n_afdconnector_data.aiv_num = 48
+                m2n_afdconnector_data.scale = None
+                
             # TODO:每推理一个token 传一次
             metadata = AFDConnectorMetadata.create_attention_metadata(
                 layer_idx=self.layer_idx,
@@ -848,9 +847,11 @@ class DeepseekV2DecoderLayer(nn.Module):
             # topk_ids = topk_ids,
             # row_idx = row_idx
             if is_m2n:
-                handle = afd_connector.send_attn_output(hidden_states,router_logits,topk_weights, topk_ids, row_idx, metadata)
+                handle = afd_connector.send_attn_output(hidden_states, metadata)
                 metadata.m2n_afdconnector_data.handle = handle
+                
                 hidden_states, _ = afd_connector.recv_ffn_output(hidden_states,metadata)
+                
             else:
                 afd_connector.send_attn_output(hidden_states,router_logits,topk_weights, topk_ids, row_idx, metadata)
                 hidden_states, _ = afd_connector.recv_ffn_output()

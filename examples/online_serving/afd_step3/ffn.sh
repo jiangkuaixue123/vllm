@@ -10,4 +10,5 @@ python -m vllm.entrypoints.afd_ffn_server /home/y00889327/DSV2LiteWeight \
         --tensor-parallel-size 2 \
         --enable_expert_parallel \
         --enforce_eager          \
-        --afd-config '{"afd_connector":"p2pconnector", "num_afd_stages":"1", "afd_role": "ffn", "afd_extra_config":{"afd_size":"2A2F"}}'
+        --max_num_batched_tokens 512 \
+        --afd-config '{"afd_connector":"m2nconnector", "num_afd_stages":"1", "afd_role": "ffn", "afd_extra_config":{"afd_size":"2A2F"}}'
