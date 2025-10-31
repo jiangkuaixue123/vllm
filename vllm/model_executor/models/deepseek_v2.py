@@ -294,14 +294,14 @@ class DeepseekV2MoE(nn.Module):
         ) -> torch.Tensor:
         num_tokens, hidden_dim = hidden_states.shape
         is_m2n = True
+        # TODO(yxj ):dynamic_scales --> dynamic_scale
         if is_m2n:
             fused_moe_out = self.experts.afd_m2n_ffn_compute(
                 layer=self.experts,  
+                hidden_states=hidden_states,  
                 group_list=group_list, 
-                dynamic_scales=dynamic_scales, 
-                topk_weights=topk_weights, 
-                topk_ids=topk_ids, 
-                row_idx=row_idx)
+                dynamic_scale=dynamic_scales
+                )
         else:
             
             fused_moe_out = self.experts.afd_ffn_compute(
@@ -815,7 +815,7 @@ class DeepseekV2DecoderLayer(nn.Module):
             topk_weights, topk_ids, row_idx = select_experts(
                 hidden_states=hidden_states,
                 router_logits=router_logits,
-                top_k=6,
+                top_k=8,
                 use_grouped_topk=False,
                 renormalize=True,
                 )
@@ -826,8 +826,6 @@ class DeepseekV2DecoderLayer(nn.Module):
             is_m2n = True
             if is_m2n:
                 m2n_afdconnector_data = M2NAFDConnectorMetadata() 
-                m2n_afdconnector_data.topk_idx = topk_ids
-                m2n_afdconnector_data.topk_weights = topk_weights
                 m2n_afdconnector_data.moe_expert_num = 64
                 m2n_afdconnector_data.quant_mode = 0
                 m2n_afdconnector_data.aiv_num = 48
@@ -847,11 +845,14 @@ class DeepseekV2DecoderLayer(nn.Module):
             # topk_ids = topk_ids,
             # row_idx = row_idx
             if is_m2n:
-                handle = afd_connector.send_attn_output(hidden_states, metadata)
+                
+                handle = afd_connector.send_attn_output(hidden_states,topk_weights,topk_ids,metadata)
+                
+                print(f'send_attn_output success ,layer id is {self.layer_idx}')
                 metadata.m2n_afdconnector_data.handle = handle
                 
-                hidden_states, _ = afd_connector.recv_ffn_output(hidden_states,metadata)
-                
+                hidden_states = afd_connector.recv_ffn_output(hidden_states,metadata)
+                print(f'recv_ffn_output success ,layer id is {self.layer_idx}')
             else:
                 afd_connector.send_attn_output(hidden_states,router_logits,topk_weights, topk_ids, row_idx, metadata)
                 hidden_states, _ = afd_connector.recv_ffn_output()
@@ -935,8 +936,8 @@ class DeepseekV2DecoderLayer(nn.Module):
                                     group_list = group_list,
                                     dynamic_scales = dynamic_scales,
                                     topk_weights=topk_weights,
-                                    topk_ids=topk_ids,
-                                    row_idx=row_idx)
+                                    topk_ids=topk_ids
+                                    )
         if isinstance(self.mlp,
                       DeepseekV2MLP) and hidden_states.dtype == torch.float16:
             # Fix FP16 overflow
@@ -1029,12 +1030,11 @@ class DeepseekV2Model(nn.Module):
         row_idx: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
         # print("compute_ffn_output in DeepseekV2Model")
-        hidden_states = self.layers[layer_idx].compute_ffn_output(hidden_states, 
-                                                                  group_list,
-                                                                  dynamic_scales,
-                                                                  topk_weights,
-                                                                  topk_ids,
-                                                                  row_idx)
+        hidden_states = self.layers[layer_idx].compute_ffn_output(hidden_states=hidden_states, 
+                                                                  group_list=group_list,
+                                                                  dynamic_scales=dynamic_scales,
+                                                                  topk_weights=topk_weights,
+                                                                  topk_ids=topk_ids)
         #for layer in islice(self.layers, self.start_layer, self.end_layer):
         #    hidden_states = layer.compute_ffn_output(hidden_states)
         return hidden_states
@@ -1164,21 +1164,24 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts,
 
     def compute_ffn_output(
         self,
-        current_layer_idx,
         hidden_states,
-        router_logits,
+        layer_idx,
+        router_logits: Optional[torch.Tensor] = None,
+        group_list: Optional[torch.Tensor] = None,
+        dynamic_scales: Optional[torch.Tensor] = None,
         topk_weights: Optional[torch.Tensor] = None,
         topk_ids: Optional[torch.Tensor] = None,
         row_idx: Optional[torch.Tensor] = None,
-        ) -> Union[torch.Tensor, IntermediateTensors]:
+    ) -> Union[torch.Tensor, IntermediateTensors]:
         # print("compute_ffn_output in DeepseekV2ForCausalLM")
         hidden_states = self.model.compute_ffn_output(
-                                    hidden_states, 
-                                    router_logits,
-                                    current_layer_idx, 
-                                    topk_weights,
-                                    topk_ids,
-                                    row_idx)
+                                    hidden_states=hidden_states,
+                                    layer_idx=layer_idx, 
+                                    group_list=group_list,
+                                    topk_weights=topk_weights,
+                                    topk_ids=topk_ids,
+                                    dynamic_scales=dynamic_scales,
+                                    )
         return hidden_states
 
 
@@ -1186,7 +1189,10 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts,
         self,
         hidden_states: torch.Tensor,
     ) -> Optional[torch.Tensor]:
+        print(f'self.lm_head is {self.lm_head}')
+        print(f'hidden_states shape  is {hidden_states.shape}')
         logits = self.logits_processor(self.lm_head, hidden_states)
+        print(f'logits success')
         return logits
 
     def load_weights(self, weights: Iterable[tuple[str,
