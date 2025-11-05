@@ -157,7 +157,7 @@ class DeepseekV2MoE(nn.Module):
                     torch.empty(config.n_routed_experts, dtype=torch.float32))
             else:
                 self.gate.e_score_correction_bias = None
-
+        self.connector_name = self.afd_config.afd_connector
         # Load balancing settings.
         eplb_config = parallel_config.eplb_config
         self.enable_eplb = parallel_config.enable_eplb
@@ -292,17 +292,16 @@ class DeepseekV2MoE(nn.Module):
         row_idx: Optional[torch.Tensor] = None,
         ) -> torch.Tensor:
         num_tokens, hidden_dim = hidden_states.shape
-        is_m2n = True
         # TODO(yxj ):dynamic_scales --> dynamic_scale
-        if is_m2n:
+        if self.connector_name == "m2nconnector" or self.connector_name == "camconnector":
             fused_moe_out = self.experts.afd_m2n_ffn_compute(
                 layer=self.experts,  
                 hidden_states=hidden_states,  
                 group_list=group_list, 
-                dynamic_scale=dynamic_scales
+                dynamic_scale=dynamic_scales,
+                connector_name=self.connector_name
                 )
         else:
-            
             fused_moe_out = self.experts.afd_ffn_compute(
                 layer=self.experts, 
                 hidden_states=hidden_states, 
@@ -652,6 +651,7 @@ class DeepseekV2DecoderLayer(nn.Module):
 
         afd_config = vllm_config.afd_config
         self.role = afd_config.afd_role
+        self.connector_name = afd_config.afd_connector
         self.hidden_size = config.hidden_size
         rope_theta = getattr(config, "rope_theta", 10000)
         rope_scaling = getattr(config, "rope_scaling", None)
@@ -822,15 +822,16 @@ class DeepseekV2DecoderLayer(nn.Module):
             topk_weights = topk_weights.to(torch.float)
             print(f'topk_weights after dtype is {topk_weights.dtype}')
             print(f'hidden_states shape dtype is {hidden_states.shape}')
-            is_m2n = False
-            is_cam = True
-            if is_m2n:
+
+
+            if self.connector_name == "m2nconnector":
                 m2n_afdconnector_data = M2NAFDConnectorMetadata() 
                 m2n_afdconnector_data.moe_expert_num = 64
                 m2n_afdconnector_data.quant_mode = 0
                 m2n_afdconnector_data.aiv_num = 48
                 m2n_afdconnector_data.scale = None
-            if is_cam:
+                
+            if self.connector_name == "camconnector":
                 cam_afdconnector_data = CAMAFDConnectorMetadata(
                     moe_expert_num = 64,
                     shared_expert_num = 0,
@@ -842,8 +843,7 @@ class DeepseekV2DecoderLayer(nn.Module):
                     h = 2048,
                     k = 6
                 )
-
-            # TODO:每推理一个token 传一次
+            # TODO(yxj):每推理一个token 传一次
             metadata = AFDConnectorMetadata.create_attention_metadata(
                 layer_idx=self.layer_idx,
                 stage_idx=0,
@@ -851,22 +851,17 @@ class DeepseekV2DecoderLayer(nn.Module):
                 dtype=hidden_states.dtype,
                 device=hidden_states.device,
                 ffn_need_forward_data=ffn_need_forward_data,
-                m2n_afdconnector_data=m2n_afdconnector_data if is_m2n else None,
-                cam_afdconnector_data=cam_afdconnector_data if is_cam else None,
+                m2n_afdconnector_data=m2n_afdconnector_data if self.connector_name == "m2nconnector" else None,
+                cam_afdconnector_data=cam_afdconnector_data if self.connector_name == "camconnector" else None,
             )
-            # topk_weights = topk_weights,
-            # topk_ids = topk_ids,
-            # row_idx = row_idx
-            if is_m2n:
-                
+            
+            if self.connector_name == "m2nconnector":
                 handle = afd_connector.send_attn_output(hidden_states,topk_weights,topk_ids,metadata)
-                
                 print(f'send_attn_output success ,layer id is {self.layer_idx}')
                 metadata.m2n_afdconnector_data.handle = handle
-                
                 hidden_states = afd_connector.recv_ffn_output(hidden_states,metadata)
                 print(f'recv_ffn_output success ,layer id is {self.layer_idx}')
-            elif is_cam:
+            elif self.connector_name == "camconnector":
                 afd_connector.send_attn_output(hidden_states, topk_weights, topk_ids, metadata)
                 hidden_states = afd_connector.recv_ffn_output(metadata)
             else:
@@ -942,9 +937,6 @@ class DeepseekV2DecoderLayer(nn.Module):
         row_idx: Optional[torch.Tensor] = None,
         ):
         print(f'ffn decode layer is {self.layer_idx}')
-        # if self.layer_idx < self.first_k_dense_replace:
-        #     print("not moe")
-        #     return hidden_states
         assert self.role == "ffn"
         # 计算
         hidden_states = self.mlp.afd_forward(
@@ -952,8 +944,11 @@ class DeepseekV2DecoderLayer(nn.Module):
                                     group_list = group_list,
                                     dynamic_scales = dynamic_scales,
                                     topk_weights=topk_weights,
-                                    topk_ids=topk_ids
+                                    topk_ids=topk_ids,
+                                    row_idx=row_idx if self.connector_name == "p2pconnector" else None,
+                                    router_logits=router_logits if self.connector_name == "p2pconnector" else None,
                                     )
+        
         if isinstance(self.mlp,
                       DeepseekV2MLP) and hidden_states.dtype == torch.float16:
             # Fix FP16 overflow
@@ -963,7 +958,6 @@ class DeepseekV2DecoderLayer(nn.Module):
             # of DeepseekV2MOE
             hidden_states *= 1. / self.routed_scaling_factor
         return hidden_states
-        # afd_connector.send_ffn_output(hidden_states, None)
 
 @support_torch_compile
 class DeepseekV2Model(nn.Module):
@@ -976,6 +970,7 @@ class DeepseekV2Model(nn.Module):
         config = vllm_config.model_config.hf_config
         quant_config = vllm_config.quant_config
         self.config = config
+        self.connector_name = vllm_config.afd_config.afd_connector
 
         self.vocab_size = config.vocab_size
 
@@ -1045,14 +1040,13 @@ class DeepseekV2Model(nn.Module):
         topk_ids: Optional[torch.Tensor] = None,
         row_idx: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
-        # print("compute_ffn_output in DeepseekV2Model")
-        hidden_states = self.layers[layer_idx].compute_ffn_output(hidden_states=hidden_states, 
-                                                                  group_list=group_list,
-                                                                  dynamic_scales=dynamic_scales,
-                                                                  topk_weights=topk_weights,
-                                                                  topk_ids=topk_ids)
-        #for layer in islice(self.layers, self.start_layer, self.end_layer):
-        #    hidden_states = layer.compute_ffn_output(hidden_states)
+        hidden_states = self.layers[layer_idx].compute_ffn_output(hidden_states = hidden_states, 
+                                    group_list = group_list,
+                                    dynamic_scales = dynamic_scales,
+                                    topk_weights=topk_weights,
+                                    topk_ids=topk_ids,
+                                    row_idx=row_idx if self.connector_name == "p2pconnector" else None,
+                                    router_logits=router_logits if self.connector_name == "p2pconnector" else None,)
         return hidden_states
 
 
@@ -1070,6 +1064,7 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts,
         self.config = config
         self.quant_config = quant_config
         self.afd_config = vllm_config.afd_config
+        self.connector_name = afd_config.afd_connector
         # `packed_modules_mapping` needs to be modified before
         # initializing DeepseekV2Model, as it is passed inplace to
         # quantization config init and may be used to select the
@@ -1189,7 +1184,6 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts,
         topk_ids: Optional[torch.Tensor] = None,
         row_idx: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
-        # print("compute_ffn_output in DeepseekV2ForCausalLM")
         hidden_states = self.model.compute_ffn_output(
                                     hidden_states=hidden_states,
                                     layer_idx=layer_idx, 
@@ -1197,6 +1191,8 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts,
                                     topk_weights=topk_weights,
                                     topk_ids=topk_ids,
                                     dynamic_scales=dynamic_scales,
+                                    row_idx=row_idx if self.connector_name == "p2pconnector" else None,
+                                    router_logits=router_logits if self.connector_name == "p2pconnector" else None,
                                     )
         return hidden_states
 
