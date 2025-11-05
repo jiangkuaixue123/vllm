@@ -292,7 +292,11 @@ class DeepseekV2MoE(nn.Module):
         row_idx: Optional[torch.Tensor] = None,
         ) -> torch.Tensor:
         num_tokens, hidden_dim = hidden_states.shape
-        is_m2n = True
+        # if self.afd_config is not None:
+        #     is_m2n = self.afd_config.afd_connector == "m2nconnector"
+        # else:
+        #     is_m2n = False
+        is_m2n = False
         # TODO(yxj ):dynamic_scales --> dynamic_scale
         if is_m2n:
             fused_moe_out = self.experts.afd_m2n_ffn_compute(
@@ -302,14 +306,13 @@ class DeepseekV2MoE(nn.Module):
                 dynamic_scale=dynamic_scales
                 )
         else:
-            
             fused_moe_out = self.experts.afd_ffn_compute(
                 layer=self.experts, 
                 hidden_states=hidden_states, 
                 router_logits=router_logits, 
                 topk_weights=topk_weights, 
                 topk_ids=topk_ids, 
-                row_idx=row_idx)
+                row_idx=row_idx,)
         
         if self.shared_experts is not None:
             shared_output, final_hidden_states = fused_moe_out
@@ -651,6 +654,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         parallel_config = vllm_config.parallel_config
 
         afd_config = vllm_config.afd_config
+        self.afd_config = afd_config
         self.role = afd_config.afd_role
         self.hidden_size = config.hidden_size
         rope_theta = getattr(config, "rope_theta", 10000)
@@ -794,7 +798,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
-        print(f'attn decode layer is {self.layer_idx}')
+        # print(f'attn decode layer is {self.layer_idx}')
         if self.role is not None and self.layer_idx >= self.first_k_dense_replace:
             # --------- ffn need data
             moe_comm_type = forward_ctx.moe_comm_type
@@ -822,7 +826,11 @@ class DeepseekV2DecoderLayer(nn.Module):
             topk_weights = topk_weights.to(torch.float)
             print(f'topk_weights after dtype is {topk_weights.dtype}')
             print(f'hidden_states shape dtype is {hidden_states.shape}')
-            is_m2n = True
+            is_m2n = False
+            # if self.afd_config is not None:
+            #     is_m2n = self.afd_config.afd_connector == "m2nconnector"
+            # else:
+            #     is_m2n = False
             if is_m2n:
                 m2n_afdconnector_data = M2NAFDConnectorMetadata() 
                 m2n_afdconnector_data.moe_expert_num = 64
@@ -924,7 +932,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         topk_ids: Optional[torch.Tensor] = None,
         row_idx: Optional[torch.Tensor] = None,
         ):
-        print(f'ffn decode layer is {self.layer_idx}')
+        # print(f'ffn decode layer is {self.layer_idx}')
         # if self.layer_idx < self.first_k_dense_replace:
         #     print("not moe")
         #     return hidden_states
@@ -935,7 +943,9 @@ class DeepseekV2DecoderLayer(nn.Module):
                                     group_list = group_list,
                                     dynamic_scales = dynamic_scales,
                                     topk_weights=topk_weights,
-                                    topk_ids=topk_ids
+                                    topk_ids=topk_ids,
+                                    row_idx = row_idx,
+                                    router_logits = router_logits,
                                     )
         if isinstance(self.mlp,
                       DeepseekV2MLP) and hidden_states.dtype == torch.float16:
@@ -1028,12 +1038,13 @@ class DeepseekV2Model(nn.Module):
         topk_ids: Optional[torch.Tensor] = None,
         row_idx: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
-        # print("compute_ffn_output in DeepseekV2Model")
         hidden_states = self.layers[layer_idx].compute_ffn_output(hidden_states=hidden_states, 
                                                                   group_list=group_list,
                                                                   dynamic_scales=dynamic_scales,
                                                                   topk_weights=topk_weights,
-                                                                  topk_ids=topk_ids)
+                                                                  topk_ids=topk_ids,
+                                                                  row_idx = row_idx,
+                                                                  router_logits = router_logits,)
         #for layer in islice(self.layers, self.start_layer, self.end_layer):
         #    hidden_states = layer.compute_ffn_output(hidden_states)
         return hidden_states
@@ -1172,7 +1183,6 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts,
         topk_ids: Optional[torch.Tensor] = None,
         row_idx: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
-        # print("compute_ffn_output in DeepseekV2ForCausalLM")
         hidden_states = self.model.compute_ffn_output(
                                     hidden_states=hidden_states,
                                     layer_idx=layer_idx, 
@@ -1180,6 +1190,8 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts,
                                     topk_weights=topk_weights,
                                     topk_ids=topk_ids,
                                     dynamic_scales=dynamic_scales,
+                                    row_idx = row_idx,
+                                    router_logits = router_logits,
                                     )
         return hidden_states
 
@@ -1408,7 +1420,6 @@ def apply(self,
         if enable_force_load_balance and not self.use_aclgraph:
             topk_ids = torch.randint_like(topk_ids, 0, global_num_experts)
 
-        print('w1=', layer.w13_weight)
         moe_comm_method = get_forward_context().moe_comm_method
         return moe_comm_method.fused_experts(
             hidden_states=x,
