@@ -66,7 +66,7 @@ from .utils import (PPMissingLayer, is_pp_missing_parameter,
                     maybe_prefix)
 from vllm.logger import init_logger
 from vllm.distributed.afd_transfer.afd_connector.metadata import (
-    AFDConnectorMetadata,FFNNeedForwardData,M2NAFDConnectorMetadata)
+    AFDConnectorMetadata,FFNNeedForwardData,M2NAFDConnectorMetadata, CAMAFDConnectorMetadata)
 
 from vllm_ascend.ops.moe.experts_selector import select_experts
 
@@ -368,7 +368,7 @@ class DeepseekV2Attention(nn.Module):
         kv_lora_rank: int,
         rope_theta: float = 10000,
         rope_scaling: Optional[dict[str, Any]] = None,
-        max_position_embeddings: int = 8192,
+        max_position_embeddings: int = 128,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
@@ -521,7 +521,7 @@ class DeepseekV2MLAAttention(nn.Module):
         kv_lora_rank: int,
         rope_theta: float = 10000,
         rope_scaling: Optional[dict[str, Any]] = None,
-        max_position_embeddings: int = 8192,
+        max_position_embeddings: int = 128,
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
@@ -660,7 +660,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         rope_theta = getattr(config, "rope_theta", 10000)
         rope_scaling = getattr(config, "rope_scaling", None)
         max_position_embeddings = getattr(config, "max_position_embeddings",
-                                          8192)
+                                          128)
         # DecoderLayers are created with `make_layers` which passes the prefix
         # with the layer's index.
         layer_idx = int(prefix.split(sep='.')[-1])
@@ -831,13 +831,26 @@ class DeepseekV2DecoderLayer(nn.Module):
             #     is_m2n = self.afd_config.afd_connector == "m2nconnector"
             # else:
             #     is_m2n = False
+            is_cam = True
             if is_m2n:
                 m2n_afdconnector_data = M2NAFDConnectorMetadata() 
                 m2n_afdconnector_data.moe_expert_num = 64
                 m2n_afdconnector_data.quant_mode = 0
                 m2n_afdconnector_data.aiv_num = 48
                 m2n_afdconnector_data.scale = None
-                
+            if is_cam:
+                cam_afdconnector_data = CAMAFDConnectorMetadata(
+                    moe_expert_num = 64,
+                    shared_expert_num = 0,
+                    scale = None,
+                    handle = None,
+                    quant_mode = 0,
+                    aiv_num = 48,
+                    batch_size = hidden_states.shape[0],
+                    h = 2048,
+                    k = 6
+                )
+
             # TODO:每推理一个token 传一次
             metadata = AFDConnectorMetadata.create_attention_metadata(
                 layer_idx=self.layer_idx,
@@ -847,6 +860,7 @@ class DeepseekV2DecoderLayer(nn.Module):
                 device=hidden_states.device,
                 ffn_need_forward_data=ffn_need_forward_data,
                 m2n_afdconnector_data=m2n_afdconnector_data if is_m2n else None,
+                cam_afdconnector_data=cam_afdconnector_data if is_cam else None,
             )
             # topk_weights = topk_weights,
             # topk_ids = topk_ids,
@@ -860,6 +874,9 @@ class DeepseekV2DecoderLayer(nn.Module):
                 
                 hidden_states = afd_connector.recv_ffn_output(hidden_states,metadata)
                 print(f'recv_ffn_output success ,layer id is {self.layer_idx}')
+            elif is_cam:
+                afd_connector.send_attn_output(hidden_states, topk_weights, topk_ids, metadata)
+                hidden_states = afd_connector.recv_ffn_output(metadata)
             else:
                 afd_connector.send_attn_output(hidden_states,router_logits,topk_weights, topk_ids, row_idx, metadata)
                 hidden_states, _ = afd_connector.recv_ffn_output()
