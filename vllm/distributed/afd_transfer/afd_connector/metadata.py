@@ -143,7 +143,7 @@ class AFDConnectorMetadata:
                    ffn_need_forward_data = ffn_need_forward_data,
                    m2n_afdconnector_data = m2n_afdconnector_data,
                    cam_afdconnector_data = cam_afdconnector_data,
-                   timestamp=time.time(),
+                #    timestamp=time.time(),
                    topk_weights = topk_weights,
                    topk_ids = topk_ids,
                    row_idx = row_idx,
