@@ -1441,6 +1441,15 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_DBO_COMM_SMS":
     lambda: int(os.getenv("VLLM_DBO_COMM_SMS", "20")),
 
+    # The size in MB of the buffers (NVL and RDMA) used by DeepEP
+    "VLLM_DEEPEP_BUFFER_SIZE_MB":
+    lambda: int(os.getenv("VLLM_DEEPEP_BUFFER_SIZE_MB", "1024")),
+
+    # The number of SMs to allocate for communication kernels when running DBO
+    # the rest of the SMs on the device will be allocated to compute
+    "VLLM_DBO_COMM_SMS":
+    lambda: int(os.getenv("VLLM_DBO_COMM_SMS", "20")),
+
     # Valid values are container,code_interpreter,web_search_preview
     # ex GPT_OSS_SYSTEM_TOOL_MCP_LABELS=container,code_interpreter
     "GPT_OSS_SYSTEM_TOOL_MCP_LABELS":
