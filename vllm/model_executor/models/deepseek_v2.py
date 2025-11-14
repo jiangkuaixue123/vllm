@@ -831,7 +831,7 @@ class DeepseekV2DecoderLayer(nn.Module):
             #     is_m2n = self.afd_config.afd_connector == "m2nconnector"
             # else:
             #     is_m2n = False
-            is_cam = True
+            is_cam = False
             if is_m2n:
                 m2n_afdconnector_data = M2NAFDConnectorMetadata() 
                 m2n_afdconnector_data.moe_expert_num = 64
