@@ -758,7 +758,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(config.hidden_size,
                                                 eps=config.rms_norm_eps)
         self.routed_scaling_factor = config.routed_scaling_factor
-
+        
     def forward(
         self,
         positions: torch.Tensor,
@@ -795,7 +795,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
-        # print(f'attn decode layer is {self.layer_idx}')
+        print(f'attn decode layer is {self.layer_idx}')
         if self.role is not None and self.layer_idx >= self.first_k_dense_replace:
             # --------- ffn need data
             moe_comm_type = forward_ctx.moe_comm_type
@@ -819,7 +819,11 @@ class DeepseekV2DecoderLayer(nn.Module):
                 use_grouped_topk=False,
                 renormalize=True,
                 )
+            
             topk_weights = topk_weights.to(torch.float)
+            # print(f'topk_weights shape is {topk_weights.shape},dtype is {topk_weights.dtype}')
+            # print(f'topk_ids shape is {topk_ids.shape},dtype is {topk_ids.dtype}')
+            # print(f'row_idx shape is {row_idx.shape},dtype is {row_idx.dtype}')
 
             if self.connector_name == "m2nconnector":
                 m2n_afdconnector_data = M2NAFDConnectorMetadata() 
@@ -854,10 +858,10 @@ class DeepseekV2DecoderLayer(nn.Module):
             
             if self.connector_name == "m2nconnector":
                 handle = afd_connector.send_attn_output(hidden_states,topk_weights,topk_ids,metadata)
-                # print(f'send_attn_output success ,layer id is {self.layer_idx}')
+                print(f'send_attn_output success ,layer id is {self.layer_idx}')
                 metadata.m2n_afdconnector_data.handle = handle
                 hidden_states = afd_connector.recv_ffn_output(hidden_states,metadata)
-                # print(f'recv_ffn_output success ,layer id is {self.layer_idx}')
+                print(f'recv_ffn_output success ,layer id is {self.layer_idx}')
             elif self.connector_name == "camconnector":
                 afd_connector.send_attn_output(hidden_states, topk_weights, topk_ids, metadata)
                 hidden_states = afd_connector.recv_ffn_output(metadata)
@@ -917,7 +921,7 @@ class DeepseekV2DecoderLayer(nn.Module):
 
     def compute_ffn_output(
         self, 
-        hidden_states,
+        hidden_states: torch.Tensor,
         router_logits: Optional[torch.Tensor] = None,
         group_list: Optional[torch.Tensor] = None,
         dynamic_scales: Optional[torch.Tensor] = None,
@@ -987,6 +991,7 @@ class DeepseekV2Model(nn.Module):
         self.make_empty_intermediate_tensors = (
             make_empty_intermediate_tensors_factory(
                 ["hidden_states", "residual"], config.hidden_size))
+        self._forword_cnt = 0
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
@@ -1019,12 +1024,14 @@ class DeepseekV2Model(nn.Module):
             })
 
         hidden_states, _ = self.norm(hidden_states, residual)
+        print(f'attn self._forword_cnt is {self._forword_cnt}')
+        self._forword_cnt += 1
         return hidden_states
 
     def compute_ffn_output(
         self,
         hidden_states,
-        layer_idx,
+        layer_idx: int,
         router_logits: Optional[torch.Tensor] = None,
         group_list: Optional[torch.Tensor] = None,
         dynamic_scales: Optional[torch.Tensor] = None,
@@ -1167,8 +1174,8 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts,
 
     def compute_ffn_output(
         self,
-        hidden_states,
-        layer_idx,
+        hidden_states: torch.Tensor,
+        layer_idx: int,
         router_logits: Optional[torch.Tensor] = None,
         group_list: Optional[torch.Tensor] = None,
         dynamic_scales: Optional[torch.Tensor] = None,
