@@ -10,6 +10,18 @@ from typing import Any, Optional
 import torch
 
 
+class FFNNeedForwardData:
+    def __init__(self,
+                 moe_comm_type:Optional[Any] = None,
+                 num_input_tokens:int = 0,
+                 with_prefill:bool = False,
+                 total_num_scheduled_tokens:int = 0,
+                 is_dummy_run:bool = False):
+        self.moe_comm_type = moe_comm_type
+        self.num_input_tokens = num_input_tokens
+        self.with_prefill = with_prefill
+        self.total_num_scheduled_tokens = total_num_scheduled_tokens
+
 @dataclass
 class AFDConnectorMetadata:
     """Lightweight AFD metadata containing core information needed for
