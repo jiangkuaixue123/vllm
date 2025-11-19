@@ -93,3 +93,11 @@ AFDConnectorFactory.register_connector(
 AFDConnectorFactory.register_connector(
     "p2pconnector", "vllm.distributed.afd_transfer.afd_connector.p2p_connector",
     "P2PAFDConnector")
+
+AFDConnectorFactory.register_connector(
+    "m2nconnector", "vllm_ascend.distributed.M2NAFDConnector",
+    "M2NAFDConnector")
+
+AFDConnectorFactory.register_connector(
+    "camconnector", "vllm_ascend.distributed.CAMAFDConnector",
+    "CAMAFDConnector")
