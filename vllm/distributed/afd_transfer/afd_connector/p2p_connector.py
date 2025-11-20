@@ -46,13 +46,15 @@ class P2PAFDConnector(AFDConnectorBase):
 
     def init_afd_connector(self) -> None:
         """Initialize the AFD connector."""
+        assert self.config.afd_config is not None, "AFD config is not set"
+        assert not self.coofig.afd_config.compute_gate_on_attention, \
+            "Compute gate on attention is not supported"
         afd_size = self.config.afd_config.afd_extra_config.get("afd_size")
         role = self.config.afd_config.afd_role
         attn_size, ffn_size = map(
             int,
             re.match(r"(\d+)\D+(\d+)", afd_size).groups())
-        #ffn_ranks = [i for i in range(ffn_size, ffn_size + attn_size)]
-        #attn_ranks = [i for i in range(attn_size)]
+        assert attn_size == ffn_size, "Attention size and FFN size must be the same"
         world_rank = self.rank if role == "attention" else self.rank + attn_size
 
         logger.info(
