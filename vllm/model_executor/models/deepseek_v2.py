@@ -645,9 +645,9 @@ class DeepseekV2DecoderLayer(nn.Module):
         quant_config = vllm_config.quant_config
         parallel_config = vllm_config.parallel_config
 
-        afd_config = vllm_config.afd_config
-        self.role = afd_config.afd_role if afd_config is not None else None
-        self.connector_name = afd_config.afd_connector if afd_config is not None else None
+        self.afd_config = vllm_config.afd_config
+        self.role = self.afd_config.afd_role if self.afd_config is not None else None
+        self.connector_name = self.afd_config.afd_connector if self.afd_config is not None else None
         self.hidden_size = config.hidden_size
         rope_theta = getattr(config, "rope_theta", 10000)
         rope_scaling = getattr(config, "rope_scaling", None)
