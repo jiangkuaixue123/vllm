@@ -8,11 +8,13 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import torch
+from vllm_ascend.ascend_forward_context import MoECommType
 
-
+#TODO(yxj):move to AFDExtraFields
 class FFNNeedForwardData:
+
     def __init__(self,
-                 moe_comm_type:Optional[Any] = None,
+                 moe_comm_type:Optional[MoECommType] = None,
                  num_input_tokens:int = 0,
                  with_prefill:bool = False,
                  total_num_scheduled_tokens:int = 0,
@@ -21,6 +23,46 @@ class FFNNeedForwardData:
         self.num_input_tokens = num_input_tokens
         self.with_prefill = with_prefill
         self.total_num_scheduled_tokens = total_num_scheduled_tokens
+
+
+@dataclass
+class M2NAFDConnectorMetadata:
+    def __init__(self):
+        self.topk_idx = None
+        self.topk_weights = None
+        self.moe_expert_num = 0
+        self.scale = None
+        self.handle = None
+        self.quant_mode = 0
+        self.aiv_num = 0
+        self.batch_size = 0
+        self.h = 0
+        self.k = 0
+        self.expert_token_nums_type = 0
+        self.expand_x_type = torch.float16
+        
+@dataclass
+class CAMAFDConnectorMetadata:
+    def __init__(self, moe_expert_num=0,
+        shared_expert_num = 0, scale=None, handle=None, quant_mode=0,
+        aiv_num=0, batch_size=0, h=0, k=0):
+        self.moe_expert_num = moe_expert_num
+        self.shared_expert_num = shared_expert_num
+        self.scale = scale
+        self.handle = handle
+        self.quant_mode = quant_mode
+        self.aiv_num = aiv_num
+        self.batch_size = batch_size
+        self.h = h
+        self.k = k
+
+@dataclass
+class AFDExtraFields:
+    """Additional field specifically for storing AFDconnectors"""
+    custom_fields: Dict[str, Any] = field(default_factory=dict)
+
+    def __init__(self, **kwargs):
+        self.custom_fields.update(kwargs)
 
 @dataclass
 class AFDConnectorMetadata:
@@ -42,6 +84,14 @@ class AFDConnectorMetadata:
     send_handle_list: Optional[list[Any]] = None # the communication handles (list of Work objects returned by torch.distributed.isend)
     recv_handle_list: Optional[list[Any]] = None # the communication handles (list of Work objects returned by torch.distributed.irecv)
 
+    # TODO(jcz): need fix vllm_ascend dependency
+    ffn_need_forward_data: Optional[FFNNeedForwardData] = None
+    m2n_afdconnector_data: Optional[M2NAFDConnectorMetadata] = None
+    cam_afdconnector_data: Optional[CAMAFDConnectorMetadata] = None
+    topk_weights: Optional[torch.Tensor] = None
+    topk_ids: Optional[torch.Tensor] = None
+    row_idx: Optional[torch.Tensor] = None
+    
     # Optional fields for debugging and extensibility
     request_id: Optional[str] = None
     timestamp: Optional[float] = None

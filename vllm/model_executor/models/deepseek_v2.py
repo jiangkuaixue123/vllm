@@ -191,7 +191,9 @@ class DeepseekV2MoE(nn.Module):
                 scoring_func=config.scoring_func,
                 # we do scaling outside, set factor to 1.0 to avoid double mul
                 routed_scaling_factor=1.0,
-                e_score_correction_bias=self.gate.e_score_correction_bias,
+                # e_score_correction_bias=self.gate.e_score_correction_bias,
+                e_score_correction_bias=self.gate.e_score_correction_bias \
+                    if self.gate is not None else None,
                 enable_eplb=self.enable_eplb,
                 num_redundant_experts=self.n_redundant_experts,
                 is_sequence_parallel=self.is_sequence_parallel,
@@ -227,7 +229,9 @@ class DeepseekV2MoE(nn.Module):
                 scoring_func=config.scoring_func,
                 # we do scaling outside, set factor to 1.0 to avoid double mul
                 routed_scaling_factor=1.0,
-                e_score_correction_bias=self.gate.e_score_correction_bias,
+                # e_score_correction_bias=self.gate.e_score_correction_bias,
+                e_score_correction_bias=self.gate.e_score_correction_bias \
+                    if self.gate is not None else None,
                 enable_eplb=self.enable_eplb,
                 num_redundant_experts=self.n_redundant_experts,
                 is_sequence_parallel=self.is_sequence_parallel,
