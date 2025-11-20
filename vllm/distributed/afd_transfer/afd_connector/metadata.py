@@ -8,11 +8,14 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import torch
-from vllm_ascend.ascend_forward_context import MoECommType
 
 #TODO(yxj):move to AFDExtraFields
-class FFNNeedForwardData:
+from vllm_ascend.ascend_forward_context import MoECommType
+from dataclasses import dataclass, field
+from typing import Dict
 
+
+class FFNNeedForwardData:
     def __init__(self,
                  moe_comm_type:Optional[MoECommType] = None,
                  num_input_tokens:int = 0,
@@ -131,7 +134,14 @@ class AFDConnectorMetadata:
             seq_len: int,
             dtype: torch.dtype,
             device: torch.device,
-            request_id: Optional[str] = None) -> "AFDConnectorMetadata":
+            request_id: Optional[str] = None,
+            ffn_need_forward_data:Optional[FFNNeedForwardData] = None,
+            m2n_afdconnector_data:Optional[M2NAFDConnectorMetadata] = None,
+            cam_afdconnector_data:Optional[CAMAFDConnectorMetadata] = None,
+            # extra_fields: AFDExtraFields = field(default_factory=AFDExtraFields),
+            topk_weights: Optional[torch.Tensor] = None,
+            topk_ids: Optional[torch.Tensor] = None,
+            row_idx: Optional[torch.Tensor] = None) -> "AFDConnectorMetadata":
         """Create metadata for attention side (single sequence)."""
         return cls(layer_idx=layer_idx,
                    stage_idx=stage_idx,
@@ -139,7 +149,15 @@ class AFDConnectorMetadata:
                    dtype=dtype,
                    device=device,
                    request_id=request_id,
-                   timestamp=time.time())
+                #    timestamp=time.time(),
+                   ffn_need_forward_data=ffn_need_forward_data,
+                   m2n_afdconnector_data=m2n_afdconnector_data,
+                   cam_afdconnector_data=cam_afdconnector_data,
+                   topk_weights=topk_weights,
+                   topk_ids=topk_ids,
+                   row_idx=row_idx,
+                #    extra_fields = extra_fields
+                   )
 
     @classmethod
     def create_ffn_metadata(
