@@ -1,4 +1,4 @@
-export ASCEND_RT_VISIBLE_DEVICES=6,7
+export ASCEND_RT_VISIBLE_DEVICES=14,15
 export HCCL_BUFFSIZE=2048
 export VLLM_LOGGING_LEVEL=DEBUG
 # export ASCEND_LAUNCH_BLOCKING=1
@@ -15,7 +15,8 @@ export VLLM_LOGGING_LEVEL=DEBUG
 python -m vllm.entrypoints.afd_ffn_server /home/l00851163/afd/DSV2LiteWeight \
         --tensor-parallel-size 2 \
         --enable_expert_parallel \
-        --max_num_batched_tokens 64 \
-        --max_num_seqs 64 \
-        --enforce_eager    \
+        --max_num_batched_tokens 4 \
+        --max_num_seqs 4 \
+        --max-model-len 4096 \
+        --compilation-config '{"cudagraph_mode": "FULL_DECODE_ONLY","cudagraph_capture_sizes":[4]}'  \
         --afd-config '{"afd_connector":"m2nconnector", "num_afd_stages":"1", "afd_role": "ffn", "afd_extra_config":{"afd_size":"2A2F"}}'

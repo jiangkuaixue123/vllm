@@ -795,7 +795,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
-        print(f'attn decode layer is {self.layer_idx}')
+        # print(f'attn decode layer is {self.layer_idx}')
         if self.role is not None and self.layer_idx >= self.first_k_dense_replace:
             # --------- ffn need data
             moe_comm_type = forward_ctx.moe_comm_type
@@ -858,10 +858,10 @@ class DeepseekV2DecoderLayer(nn.Module):
             
             if self.connector_name == "m2nconnector":
                 handle = afd_connector.send_attn_output(hidden_states,topk_weights,topk_ids,metadata)
-                print(f'send_attn_output success ,layer id is {self.layer_idx}')
+                # print(f'send_attn_output success ,layer id is {self.layer_idx}')
                 metadata.m2n_afdconnector_data.handle = handle
                 hidden_states = afd_connector.recv_ffn_output(hidden_states,metadata)
-                print(f'recv_ffn_output success ,layer id is {self.layer_idx}')
+                # print(f'recv_ffn_output success ,layer id is {self.layer_idx}')
             elif self.connector_name == "camconnector":
                 afd_connector.send_attn_output(hidden_states, topk_weights, topk_ids, metadata)
                 hidden_states = afd_connector.recv_ffn_output(metadata)
@@ -1024,7 +1024,7 @@ class DeepseekV2Model(nn.Module):
             })
 
         hidden_states, _ = self.norm(hidden_states, residual)
-        print(f'attn self._forword_cnt is {self._forword_cnt}')
+        # print(f'attn self._forword_cnt is {self._forword_cnt}')
         self._forword_cnt += 1
         return hidden_states
 
