@@ -911,13 +911,14 @@ class DeepseekV2DecoderLayer(nn.Module):
 
         return hidden_states, residual
 
-    def compute_ffn_output(self, hidden_states: torch.Tensor,
+    def compute_ffn_output(self,
+                           hidden_states: torch.Tensor,
                            router_logits: Optional[torch.Tensor] = None,
-                            group_list: Optional[torch.Tensor] = None,
-                            dynamic_scales: Optional[torch.Tensor] = None,
-                            topk_weights: Optional[torch.Tensor] = None,
-                            topk_ids: Optional[torch.Tensor] = None,
-                            row_idx: Optional[torch.Tensor] = None):
+                           group_list: Optional[torch.Tensor] = None,
+                           dynamic_scales: Optional[torch.Tensor] = None,
+                           topk_weights: Optional[torch.Tensor] = None,
+                           topk_ids: Optional[torch.Tensor] = None,
+                           row_idx: Optional[torch.Tensor] = None):
         assert self.role == "ffn"
         if self.afd_config is not None and self.afd_config.compute_gate_on_attention:
             hidden_states = self.mlp.afd_forward(
@@ -1213,14 +1214,28 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts,
                                    inputs_embeds)
         return hidden_states
 
-
     def compute_ffn_output(
         self,
-        current_layer_idx,
-        hidden_states) -> Union[torch.Tensor, IntermediateTensors]:
-        hidden_states = self.model.compute_ffn_output(hidden_states, current_layer_idx)
+        hidden_states: torch.Tensor,
+        layer_idx: int,
+        router_logits: Optional[torch.Tensor] = None,
+        group_list: Optional[torch.Tensor] = None,
+        dynamic_scales: Optional[torch.Tensor] = None,
+        topk_weights: Optional[torch.Tensor] = None,
+        topk_ids: Optional[torch.Tensor] = None,
+        row_idx: Optional[torch.Tensor] = None,
+    ) -> Union[torch.Tensor, IntermediateTensors]:
+        hidden_states = self.model.compute_ffn_output(
+                                    hidden_states=hidden_states,
+                                    layer_idx=layer_idx, 
+                                    group_list=group_list,
+                                    topk_weights=topk_weights,
+                                    topk_ids=topk_ids,
+                                    dynamic_scales=dynamic_scales,
+                                    row_idx=row_idx if self.connector_name == "p2pconnector" else None,
+                                    router_logits=router_logits if self.connector_name == "p2pconnector" else None,
+                                    )
         return hidden_states
-
 
     def compute_logits(
         self,
