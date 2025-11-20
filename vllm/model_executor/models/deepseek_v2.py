@@ -143,8 +143,8 @@ class DeepseekV2MoE(nn.Module):
         if config.hidden_act != "silu":
             raise ValueError(f"Unsupported activation: {config.hidden_act}. "
                              "Only silu is supported for now.")
-        config = get_current_vllm_config()
-        self.afd_config = getattr(config, "afd_config", None)
+        vllm_config = get_current_vllm_config()
+        self.afd_config = getattr(vllm_config, "afd_config", None)
         if self.afd_config is None or not self.afd_config.compute_gate_on_attention:
             self.gate = ReplicatedLinear(config.hidden_size,
                                         config.n_routed_experts,
@@ -815,6 +815,7 @@ class DeepseekV2DecoderLayer(nn.Module):
             # print(f'row_idx shape is {row_idx.shape},dtype is {row_idx.dtype}')
 
             if self.connector_name == "m2nconnector":
+                from vllm_ascend.distributed.M2NAFDConnector import M2NAFDConnectorMetadata
                 m2n_afdconnector_data = M2NAFDConnectorMetadata() 
                 m2n_afdconnector_data.moe_expert_num = 64
                 m2n_afdconnector_data.quant_mode = 0
@@ -1041,15 +1042,19 @@ class DeepseekV2Model(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
 
-        forward_ctx = get_forward_context()
-        afd_metadata = (forward_ctx.afd_metadata
-                        if forward_ctx is not None else None)
-        if afd_metadata != None:
-            hidden_states, residual = self.forward_with_afd(hidden_states, residual,
-                                                            positions, afd_metadata)
-        else:
-            for layer in islice(self.layers, self.start_layer, self.end_layer):
-                hidden_states, residual = layer(positions, hidden_states, residual)
+        # TODO(jcz): later need fix this
+        # forward_ctx = get_forward_context()
+        # afd_metadata = (forward_ctx.afd_metadata
+        #                 if forward_ctx is not None else None)
+        # if afd_metadata != None:
+        #     hidden_states, residual = self.forward_with_afd(hidden_states, residual,
+        #                                                     positions, afd_metadata)
+        # else:
+        #     for layer in islice(self.layers, self.start_layer, self.end_layer):
+        #         hidden_states, residual = layer(positions, hidden_states, residual)
+
+        for layer in islice(self.layers, self.start_layer, self.end_layer):
+            hidden_states, residual = layer(positions, hidden_states, residual)
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
