@@ -9,10 +9,37 @@ from typing import Any, Optional
 
 import torch
 
+from abc import ABC, abstractmethod
+
 #TODO(yxj):move to AFDExtraFields
 from vllm_ascend.ascend_forward_context import MoECommType
 from dataclasses import dataclass, field
 from typing import Dict
+
+
+class AFDRecvHandle(ABC):
+    """
+    Abstract base class for AFD receive handles.
+    
+    This provides a handle interface for managing asynchronous AFD operations,
+    allowing waiting for completion of data transfer operations.
+    """
+    @abstractmethod
+    def __init__(self, handle: Any):
+        """Initialize the AFD receive handle.
+        
+        Args:
+            handle: Backend-specific handle object
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def wait(self):
+        """Wait for the operation associated with this handle to complete.
+        
+        Blocks until the data transfer or computation is finished.
+        """
+        raise NotImplementedError
 
 
 class FFNNeedForwardData:

@@ -753,8 +753,6 @@ class DeepseekV2DecoderLayer(nn.Module):
                                                 eps=config.rms_norm_eps)
         self.routed_scaling_factor = config.routed_scaling_factor
 
-        self.recv_event = None
-
     def forward(
         self,
         positions: torch.Tensor,
@@ -1045,9 +1043,9 @@ class DeepseekV2Model(nn.Module):
                         f"start_idx:{start_idx} end_idx:{end_idx} "
                         f"stage_idx:{afd_metadata.afd_stage_idx}")
             
-            # if recv_handle is not None:
-            #     for work in recv_handle:
-            #         work.wait()
+            if recv_handle is not None:
+                for work in recv_handle:
+                    work.wait()
 
             current_hidden, residual, topk_weights, topk_ids, row_idx = \
                 layer.compute_attn_output(positions, hidden_states, residual)
@@ -1085,7 +1083,7 @@ class DeepseekV2Model(nn.Module):
             if self.connector_name == "m2nconnector":
                 handle = afd_connector.send_attn_output(current_hidden,topk_weights,topk_ids,metadata)
                 metadata.m2n_afdconnector_data.handle = handle
-                hidden_states = afd_connector.recv_ffn_output(hidden_states,metadata)
+                hidden_states, recv_handle = afd_connector.recv_ffn_output(hidden_states,metadata)
             elif self.connector_name == "camconnector":
                 afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
                 hidden_states = afd_connector.recv_ffn_output(metadata)
@@ -1124,6 +1122,7 @@ class DeepseekV2Model(nn.Module):
         else:
             for layer in islice(self.layers, self.start_layer, self.end_layer):
                 hidden_states, residual = layer(positions, hidden_states, residual)
+
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
