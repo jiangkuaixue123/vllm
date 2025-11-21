@@ -753,6 +753,8 @@ class DeepseekV2DecoderLayer(nn.Module):
                                                 eps=config.rms_norm_eps)
         self.routed_scaling_factor = config.routed_scaling_factor
 
+        self.recv_event = None
+
     def forward(
         self,
         positions: torch.Tensor,
@@ -877,7 +879,7 @@ class DeepseekV2DecoderLayer(nn.Module):
             hidden_states *= 1. / self.routed_scaling_factor
 
         return hidden_states, residual
-
+    
     def compute_attn_output(
         self,
         positions: torch.Tensor,
@@ -908,8 +910,24 @@ class DeepseekV2DecoderLayer(nn.Module):
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(
             hidden_states, residual)
+        
+        topk_weights = None
+        topk_ids = None
+        row_idx = None
+        # Compute gate on attention side.
+        if self.layer_idx >= self.first_k_dense_replace and self.afd_config.compute_gate_on_attention:
+            router_logits, _ = self.gate(hidden_states)
+            topk_weights, topk_ids, row_idx = select_experts(
+                hidden_states=hidden_states,
+                router_logits=router_logits,
+                top_k=8,
+                use_grouped_topk=False,
+                renormalize=True,
+                )
+        
+            topk_weights = topk_weights.to(torch.float)
 
-        return hidden_states, residual
+        return hidden_states, residual, topk_weights, topk_ids, row_idx
 
     def compute_ffn_output(self,
                            hidden_states: torch.Tensor,
@@ -954,6 +972,9 @@ class DeepseekV2Model(nn.Module):
         config = vllm_config.model_config.hf_config
         quant_config = vllm_config.quant_config
         self.config = config
+        self.first_k_dense_replace = config.first_k_dense_replace
+        self.afd_config = vllm_config.afd_config
+        self.connector_name = self.afd_config.afd_connector if self.afd_config is not None else None
 
         self.vocab_size = config.vocab_size
 
@@ -993,15 +1014,28 @@ class DeepseekV2Model(nn.Module):
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.embed_tokens(input_ids)
     
-    def forward_with_afd(
+    def forward_m2n(
         self,
         hidden_states: torch.Tensor,
         residual: torch.Tensor,
         positions: torch.Tensor,
         afd_metadata: AFDMetadata
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    )-> tuple[torch.Tensor, torch.Tensor]:
         recv_handle = None
+            
+        forward_ctx = get_forward_context()
+        moe_comm_type = forward_ctx.moe_comm_type
+        num_tokens = hidden_states.shape[0]
+        with_prefill = forward_ctx.with_prefill
+        num_actual_tokens = None
+        ffn_need_forward_data = FFNNeedForwardData(moe_comm_type,num_tokens,with_prefill,num_actual_tokens)
+        
         for layer in islice(self.layers, self.start_layer, self.end_layer):
+            # Compute dense layers on attn side.
+            if layer.layer_idx < self.first_k_dense_replace:
+                hidden_states, residual = layer(positions, hidden_states, residual)
+                continue
+
             logger.info(f"jcz deepseekv2 layer_idx:{layer.layer_idx} metadata:{afd_metadata} hidden_states:{hidden_states.shape}")
             afd_connector = afd_metadata.afd_connector
             afd_metadata.afd_stage_idx = dbo_current_ubatch_id()
@@ -1010,21 +1044,55 @@ class DeepseekV2Model(nn.Module):
             logger.info(f"jcz deepseekv2 layer_idx:{layer.layer_idx} start_loc:{afd_metadata.afd_tokens_start_loc} "
                         f"start_idx:{start_idx} end_idx:{end_idx} "
                         f"stage_idx:{afd_metadata.afd_stage_idx}")
-            if recv_handle is not None:
-                for work in recv_handle:
-                    work.wait()
-            current_hidden, residual = layer(positions, hidden_states, residual)
+            
+            # if recv_handle is not None:
+            #     for work in recv_handle:
+            #         work.wait()
+
+            current_hidden, residual, topk_weights, topk_ids, row_idx = \
+                layer.compute_attn_output(positions, hidden_states, residual)
+            if self.connector_name == "m2nconnector":
+                from vllm_ascend.distributed.M2NAFDConnector import M2NAFDConnectorMetadata
+                m2n_afdconnector_data = M2NAFDConnectorMetadata()
+                m2n_afdconnector_data.moe_expert_num = 64
+                m2n_afdconnector_data.quant_mode = 0
+                m2n_afdconnector_data.aiv_num = 48
+                m2n_afdconnector_data.scale = None
+            if self.connector_name == "camconnector":
+                cam_afdconnector_data = CAMAFDConnectorMetadata(
+                    moe_expert_num = 64,
+                    shared_expert_num = 0,
+                    scale = None,
+                    handle = None,
+                    quant_mode = 0,
+                    aiv_num = 48,
+                    batch_size = hidden_states.shape[0],
+                    h = 2048,
+                    k = 6
+                )
+
             metadata = AFDConnectorMetadata.create_attention_metadata(
                 layer_idx=layer.layer_idx,
                 stage_idx=afd_metadata.afd_stage_idx,
-                seq_len=current_hidden.shape[0],
-                dtype=current_hidden.dtype,
-                device=current_hidden.device,
+                seq_len=hidden_states.shape[0],
+                dtype=hidden_states.dtype,
+                device=hidden_states.device,
+                ffn_need_forward_data=ffn_need_forward_data,
+                m2n_afdconnector_data=m2n_afdconnector_data if self.connector_name == "m2nconnector" else None,
+                cam_afdconnector_data=cam_afdconnector_data if self.connector_name == "camconnector" else None,
             )
-            afd_connector.send_attn_output(current_hidden, metadata)
-            hidden_states, recv_metadata = afd_connector.recv_ffn_output()
-            if recv_metadata.recv_handle_list is not None:
-                recv_handle = recv_metadata.recv_handle_list
+            
+            if self.connector_name == "m2nconnector":
+                handle = afd_connector.send_attn_output(current_hidden,topk_weights,topk_ids,metadata)
+                metadata.m2n_afdconnector_data.handle = handle
+                hidden_states = afd_connector.recv_ffn_output(hidden_states,metadata)
+            elif self.connector_name == "camconnector":
+                afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
+                hidden_states = afd_connector.recv_ffn_output(metadata)
+            else:
+                afd_connector.send_attn_output(current_hidden, router_logits, topk_weights, topk_ids, row_idx, metadata)
+                hidden_states, _ = afd_connector.recv_ffn_output()
+
             if dbo_enabled():
                 dbo_yield()
         return hidden_states, residual
@@ -1048,18 +1116,14 @@ class DeepseekV2Model(nn.Module):
             residual = intermediate_tensors["residual"]
 
         # TODO(jcz): later need fix this
-        # forward_ctx = get_forward_context()
-        # afd_metadata = (forward_ctx.afd_metadata
-        #                 if forward_ctx is not None else None)
-        # if afd_metadata != None:
-        #     hidden_states, residual = self.forward_with_afd(hidden_states, residual,
-        #                                                     positions, afd_metadata)
-        # else:
-        #     for layer in islice(self.layers, self.start_layer, self.end_layer):
-        #         hidden_states, residual = layer(positions, hidden_states, residual)
-
-        for layer in islice(self.layers, self.start_layer, self.end_layer):
-            hidden_states, residual = layer(positions, hidden_states, residual)
+        forward_ctx = get_forward_context()
+        afd_metadata = (forward_ctx.afd_metadata
+                        if forward_ctx is not None else None)
+        if afd_metadata != None:
+            hidden_states, residual = self.forward_m2n(hidden_states, residual, positions, afd_metadata)
+        else:
+            for layer in islice(self.layers, self.start_layer, self.end_layer):
+                hidden_states, residual = layer(positions, hidden_states, residual)
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
