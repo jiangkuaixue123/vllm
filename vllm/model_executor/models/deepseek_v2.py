@@ -895,6 +895,7 @@ class DeepseekV2Model(nn.Module):
         config = vllm_config.model_config.hf_config
         quant_config = vllm_config.quant_config
         self.config = config
+        self.enforce_eager = vllm_config.model_config.enforce_eager
         self.first_k_dense_replace = config.first_k_dense_replace
         self.afd_config = vllm_config.afd_config
         self.connector_name = self.afd_config.afd_connector if self.afd_config is not None else None
@@ -958,15 +959,17 @@ class DeepseekV2Model(nn.Module):
             if layer.layer_idx < self.first_k_dense_replace:
                 hidden_states, residual = layer(positions, hidden_states, residual)
                 continue
-
-            logger.info(f"jcz deepseekv2 layer_idx:{layer.layer_idx} metadata:{afd_metadata} hidden_states:{hidden_states.shape}")
+            
             afd_connector = afd_metadata.afd_connector
             afd_metadata.afd_stage_idx = dbo_current_ubatch_id()
             start_idx = afd_metadata.afd_tokens_start_loc[afd_metadata.afd_stage_idx]
             end_idx = start_idx + afd_metadata.afd_tokens_lens[afd_metadata.afd_stage_idx]
-            logger.info(f"jcz deepseekv2 layer_idx:{layer.layer_idx} start_loc:{afd_metadata.afd_tokens_start_loc} "
-                        f"start_idx:{start_idx} end_idx:{end_idx} "
-                        f"stage_idx:{afd_metadata.afd_stage_idx}")
+
+            if self.enforce_eager:
+                logger.info(f"jcz deepseekv2 layer_idx:{layer.layer_idx} metadata:{afd_metadata} hidden_states:{hidden_states.shape}")
+                logger.info(f"jcz deepseekv2 layer_idx:{layer.layer_idx} start_loc:{afd_metadata.afd_tokens_start_loc} "
+                            f"start_idx:{start_idx} end_idx:{end_idx} "
+                            f"stage_idx:{afd_metadata.afd_stage_idx}")
             
             if recv_handle is not None:
                 for work in recv_handle:
@@ -1008,7 +1011,7 @@ class DeepseekV2Model(nn.Module):
             if self.connector_name == "m2nconnector":
                 handle = afd_connector.send_attn_output(current_hidden,topk_weights,topk_ids,metadata)
                 metadata.m2n_afdconnector_data.handle = handle
-                hidden_states, recv_handle = afd_connector.recv_ffn_output(hidden_states,metadata)
+                hidden_states = afd_connector.recv_ffn_output(hidden_states,metadata)
             elif self.connector_name == "camconnector":
                 afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
                 hidden_states = afd_connector.recv_ffn_output(metadata)
