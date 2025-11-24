@@ -850,7 +850,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         
             topk_weights = topk_weights.to(torch.float)
 
-        return hidden_states, residual, topk_weights, topk_ids, row_idx
+        return hidden_states, residual, topk_weights, topk_ids, row_idx ,router_logits
 
     def compute_ffn_output(self,
                            hidden_states: torch.Tensor,
@@ -901,6 +901,11 @@ class DeepseekV2Model(nn.Module):
         self.connector_name = self.afd_config.afd_connector if self.afd_config is not None else None
 
         self.vocab_size = config.vocab_size
+        self.afd_config = vllm_config.afd_config
+        if self.afd_config:
+            self.connector_name = vllm_config.afd_config.afd_connector
+        else:
+            self.connector_name = None
 
         if get_pp_group().is_first_rank:
             self.embed_tokens = VocabParallelEmbedding(
@@ -975,7 +980,7 @@ class DeepseekV2Model(nn.Module):
                 for work in recv_handle:
                     work.wait()
 
-            current_hidden, residual, topk_weights, topk_ids, row_idx = \
+            current_hidden, residual, topk_weights, topk_ids, row_idx,router_logits= \
                 layer.compute_attn_output(positions, hidden_states, residual)
             if self.connector_name == "m2nconnector":
                 from vllm_ascend.distributed.M2NAFDConnector import M2NAFDConnectorMetadata
@@ -1016,8 +1021,15 @@ class DeepseekV2Model(nn.Module):
                 afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
                 hidden_states = afd_connector.recv_ffn_output(metadata)
             else:
-                afd_connector.send_attn_output(current_hidden, router_logits, topk_weights, topk_ids, row_idx, metadata)
+                afd_connector.send_attn_output(hidden_states = current_hidden,
+                                               router_logits = router_logits,
+                                               topk_weights = topk_weights, 
+                                               topk_ids = topk_ids, 
+                                               row_idx = row_idx, 
+                                               metadata = metadata)
                 hidden_states, _ = afd_connector.recv_ffn_output()
+                
+            
 
             if dbo_enabled():
                 dbo_yield()
@@ -1072,14 +1084,14 @@ class DeepseekV2Model(nn.Module):
         topk_ids: Optional[torch.Tensor] = None,
         row_idx: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, IntermediateTensors]:
-        if self.afd_connector_name == "m2nconnector" or self.afd_connector_name == "camconnector":
-            hidden_states = self.layers[layer_idx].compute_ffn_output(hidden_states,
-                                                                      router_logits=router_logits,
-                                                                      group_list=group_list,
-                                                                      dynamic_scales=dynamic_scales,
-                                                                      topk_weights=topk_weights,
-                                                                      topk_ids=topk_ids,
-                                                                      row_idx=row_idx)
+        if self.afd_config is not None and self.afd_config.compute_gate_on_attention:
+            hidden_states = self.layers[layer_idx].compute_ffn_output(hidden_states = hidden_states, 
+                                            group_list = group_list,
+                                            dynamic_scales = dynamic_scales,
+                                            topk_weights=topk_weights,
+                                            topk_ids=topk_ids,
+                                            row_idx=row_idx if self.connector_name == "p2pconnector" else None,
+                                            router_logits=router_logits if self.connector_name == "p2pconnector" else None,)
         else:
             hidden_states = self.layers[layer_idx].compute_ffn_output(hidden_states)
         return hidden_states
