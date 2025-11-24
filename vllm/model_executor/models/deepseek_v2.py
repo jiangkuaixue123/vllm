@@ -35,7 +35,7 @@ from transformers import DeepseekV2Config, DeepseekV3Config
 from vllm.attention import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, ParallelConfig, VllmConfig, get_current_vllm_config
-from vllm.distributed import (get_ep_group, get_pp_group,
+from vllm.distributed import (get_ep_group, get_pp_group, set_substitute_tp,
                               get_tensor_model_parallel_rank,
                               get_tensor_model_parallel_world_size,
                               tensor_model_parallel_all_gather)
@@ -203,6 +203,8 @@ class DeepseekV2MoE(nn.Module):
             intermediate_size = (config.moe_intermediate_size *
                                  config.n_shared_experts)
 
+            # TODO(lxf) temperory solution for ffn support dp
+            set_substitute_tp(1)
             self.shared_experts = DeepseekV2MLP(
                 hidden_size=config.hidden_size,
                 intermediate_size=intermediate_size,
@@ -212,6 +214,7 @@ class DeepseekV2MoE(nn.Module):
                 reduce_results=False,
                 prefix=f"{prefix}.shared_experts",
             )
+            set_substitute_tp(0)
 
             self.experts = SharedFusedMoE(
                 shared_experts=self.shared_experts,
@@ -296,6 +299,11 @@ class DeepseekV2MoE(nn.Module):
         ) -> torch.Tensor:
         num_tokens, hidden_dim = hidden_states.shape
         # TODO(yxj ):dynamic_scales --> dynamic_scale
+
+        # TODO(lxf) temperory solution for ffn support dp
+        set_substitute_tp(1)
+        self.tp_size = get_tensor_model_parallel_world_size()
+        self.tp_rank = get_tensor_model_parallel_rank()
         if self.connector_name == "m2nconnector" or self.connector_name == "camconnector":
             fused_moe_out = self.experts.afd_m2n_ffn_compute(
                 layer=self.experts,  
@@ -340,6 +348,7 @@ class DeepseekV2MoE(nn.Module):
                 self.experts.maybe_all_reduce_tensor_model_parallel(
                     final_hidden_states))
 
+        set_substitute_tp(0)
         return final_hidden_states.view(num_tokens, hidden_dim)
 
 
