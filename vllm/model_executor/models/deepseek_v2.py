@@ -990,6 +990,7 @@ class DeepseekV2Model(nn.Module):
                 m2n_afdconnector_data.aiv_num = 48
                 m2n_afdconnector_data.scale = None
             if self.connector_name == "camconnector":
+                from vllm_ascend.distributed.CAMAFDConnector import CAMAFDConnectorMetadata
                 cam_afdconnector_data = CAMAFDConnectorMetadata(
                     moe_expert_num = 64,
                     shared_expert_num = 0,
@@ -997,9 +998,9 @@ class DeepseekV2Model(nn.Module):
                     handle = None,
                     quant_mode = 0,
                     aiv_num = 48,
-                    batch_size = hidden_states.shape[0],
+                    batch_size = 4,
                     h = 2048,
-                    k = 6
+                    k = 8
                 )
 
             metadata = AFDConnectorMetadata.create_attention_metadata(
@@ -1019,7 +1020,7 @@ class DeepseekV2Model(nn.Module):
                 hidden_states = afd_connector.recv_ffn_output(hidden_states,metadata)
             elif self.connector_name == "camconnector":
                 afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
-                hidden_states = afd_connector.recv_ffn_output(metadata)
+                hidden_states = afd_connector.recv_ffn_output(hidden_states, metadata)
             else:
                 afd_connector.send_attn_output(hidden_states = current_hidden,
                                                router_logits = router_logits,
