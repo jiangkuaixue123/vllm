@@ -137,3 +137,8 @@ class AFDConnectorBase(ABC):
                       for splitting and routing info
         """
         raise NotImplementedError
+    
+    @abstractmethod
+    def wait_recv_stream(self) -> None:
+        """Wait for the recv stream to complete."""
+        raise NotImplementedError

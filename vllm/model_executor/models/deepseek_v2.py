@@ -958,6 +958,7 @@ class DeepseekV2Model(nn.Module):
         with_prefill = forward_ctx.with_prefill
         num_actual_tokens = None
         ffn_need_forward_data = FFNNeedForwardData(moe_comm_type,num_tokens,with_prefill,num_actual_tokens)
+        afd_connector = afd_metadata.afd_connector
         
         for layer in islice(self.layers, self.start_layer, self.end_layer):
             # Compute dense layers on attn side.
@@ -965,7 +966,6 @@ class DeepseekV2Model(nn.Module):
                 hidden_states, residual = layer(positions, hidden_states, residual)
                 continue
             
-            afd_connector = afd_metadata.afd_connector
             afd_metadata.afd_stage_idx = dbo_current_ubatch_id()
             start_idx = afd_metadata.afd_tokens_start_loc[afd_metadata.afd_stage_idx]
             end_idx = start_idx + afd_metadata.afd_tokens_lens[afd_metadata.afd_stage_idx]
@@ -979,7 +979,7 @@ class DeepseekV2Model(nn.Module):
             if recv_handle is not None:
                 for work in recv_handle:
                     work.wait()
-
+            afd_connector.wait_recv_stream()
             current_hidden, residual, topk_weights, topk_ids, row_idx,router_logits= \
                 layer.compute_attn_output(positions, hidden_states, residual)
             if self.connector_name == "m2nconnector":
@@ -1030,8 +1030,6 @@ class DeepseekV2Model(nn.Module):
                                                metadata = metadata)
                 hidden_states, _ = afd_connector.recv_ffn_output()
                 
-            
-
             if dbo_enabled():
                 dbo_yield()
         return hidden_states, residual

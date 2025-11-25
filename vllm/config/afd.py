@@ -48,6 +48,12 @@ class AFDConfig:
     compute_gate_on_attention: bool = False
     """Whether to compute the gate on the attention side."""
 
+    attn_use_multistream: bool = False
+    """Whether to use multistream for the attention side."""
+    
+    ffn_use_multistream: bool = False
+    """Whether to use multistream for the FFN side."""
+
     def compute_hash(self) -> str:
         """
         WARNING: Whenever a new field is added to this config,

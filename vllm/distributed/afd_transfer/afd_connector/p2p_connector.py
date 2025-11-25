@@ -352,5 +352,6 @@ class P2PAFDConnector(AFDConnectorBase):
         else:
             torch.cuda.current_stream().synchronize()
         
-
-    
+    def wait_recv_stream(self) -> None:
+        """Wait for the recv stream to complete."""
+        pass
