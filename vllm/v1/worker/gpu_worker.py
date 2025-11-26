@@ -35,12 +35,12 @@ from vllm.v1.worker.gpu_ffn_model_runner import GPUFFNModelRunner
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.utils import is_residual_scattered_for_sp
 from vllm.v1.worker.worker_base import WorkerBase
+from vllm.v1.core.sched.output import SchedulerOutput
 
 logger = init_logger(__name__)
 
 if TYPE_CHECKING:
     from vllm.model_executor.model_loader.tensorizer import TensorizerConfig
-    from vllm.v1.core.sched.output import SchedulerOutput
 
 
 class Worker(WorkerBase):
@@ -432,8 +432,8 @@ class Worker(WorkerBase):
     @torch.inference_mode()
     def execute_model(
         self,
-        scheduler_output: Optional["SchedulerOutput"] = None,
-    ) -> Optional[Union[ModelRunnerOutput, AsyncModelRunnerOutput]]:
+        scheduler_output: Optional["SchedulerOutput"] = None
+    ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:
         # FFN server mode: direct execution without pipeline parallelism
         if (self.vllm_config.afd_config
                 and self.vllm_config.afd_config.is_ffn_server):
@@ -569,8 +569,7 @@ class Worker(WorkerBase):
                 self._ffn_thread.join(timeout=5)
             logger.info("FFN server loop stopped")
 
-    def _eplb_before_scale_down(self, old_ep_size: int,
-                                new_ep_size: int) -> None:
+    def _eplb_before_scale_down(self, old_ep_size: int, new_ep_size: int) -> None:
         from vllm.distributed.parallel_state import get_ep_group
         if get_ep_group().rank == 0:
             logger.info("[Elastic EP] Starting expert resharding "

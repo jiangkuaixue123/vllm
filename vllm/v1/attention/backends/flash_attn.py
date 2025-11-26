@@ -31,6 +31,7 @@ from vllm.v1.attention.backends.utils import (AttentionCGSupport,
                                               get_kv_cache_layout)
 from vllm.v1.kv_cache_interface import AttentionSpec
 
+from typing import TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from vllm.forward_context import AFDMetadata
 

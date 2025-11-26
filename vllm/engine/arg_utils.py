@@ -32,7 +32,7 @@ from vllm.config import (AFDConfig, BlockSize, CacheConfig, CacheDType,
                          PoolerConfig, PrefixCachingHashAlgo, RunnerOption,
                          SchedulerConfig, SchedulerPolicy, SpeculativeConfig,
                          StructuredOutputsConfig, TaskOption, TokenizerMode,
-                         VllmConfig, get_attr_docs)
+                         VllmConfig, get_attr_docs, AFDConfig)
 from vllm.config.multimodal import MMCacheType, MultiModalConfig
 from vllm.config.parallel import ExpertPlacementStrategy
 from vllm.config.utils import get_field
@@ -487,7 +487,7 @@ class EngineArgs:
         CacheConfig.kv_sharing_fast_prefill
 
     # AFD config
-    afd_config: Optional[AFDConfig] = None
+    afd_config: AFDConfig | None = None
 
     def __post_init__(self):
         # support `EngineArgs(compilation_config={...})`
@@ -942,6 +942,7 @@ class EngineArgs:
                                 **vllm_kwargs["additional_config"])
         vllm_group.add_argument('--structured-outputs-config',
                                 **vllm_kwargs["structured_outputs_config"])
+        vllm_group.add_argument("--afd-config", **vllm_kwargs["afd_config"])
 
         # Other arguments
         parser.add_argument('--disable-log-stats',

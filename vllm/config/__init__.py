@@ -28,6 +28,7 @@ from vllm.config.cache import (BlockSize, CacheConfig, CacheDType, MambaDType,
 from vllm.config.compilation import (CompilationConfig, CompilationLevel,
                                      CUDAGraphMode, PassConfig)
 from vllm.config.device import Device, DeviceConfig
+from vllm.config.afd import AFDConfig
 from vllm.config.kv_events import KVEventsConfig
 from vllm.config.kv_transfer import KVTransferConfig
 from vllm.config.load import LoadConfig
@@ -206,7 +207,7 @@ class VllmConfig:
     kv_events_config: Optional[KVEventsConfig] = None
     """The configurations for event publishing."""
     afd_config: Optional[AFDConfig] = None
-    """AFD (Attention FFN Disaggregation) configuration."""
+    """The configurations for AFD (Attention FFN Disaggregation)."""
     # some opaque config, only used to provide additional information
     # for the hash computation, mainly used for testing, debugging or out of
     # tree config registration.

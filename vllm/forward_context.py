@@ -216,6 +216,45 @@ class DPMetadata:
         return result, padded_num_tokens_tensor.cpu()
 
     @staticmethod
+    def num_stage_tokens_across_dp(
+            num_stage_tokens: list[int], dp_size: int,
+            dp_rank: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Gather the stage token counts across all DP ranks.
+        Args:
+            num_stage_tokens: list of token counts per stage for current rank
+            dp_size: number of DP ranks
+            dp_rank: current DP rank
+        Returns:
+            stage_tokens_across_dp_cpu: [num_stages, dp_size] tensor
+            max_stage_tokens_across_dp_cpu: [num_stages] tensor with max
+            tokens per stage
+        """
+        from vllm.distributed.parallel_state import get_dp_group
+        from vllm.platforms import current_platform
+        import torch.distributed as dist
+        device = current_platform.device_type
+        group = get_dp_group().device_group
+
+        num_stages = len(num_stage_tokens)
+        stage_tokens_across_dp = torch.zeros((num_stages, dp_size),
+                                             device=device,
+                                             dtype=torch.int32)
+        stage_tokens_across_dp[:, dp_rank] = torch.tensor(num_stage_tokens,
+                                                          device=device,
+                                                          dtype=torch.int32)
+
+        # AllReduce to gather from all ranks
+        dist.all_reduce(stage_tokens_across_dp, group=group)
+        stage_tokens_across_dp_cpu = stage_tokens_across_dp.cpu()
+
+        # Compute max tokens per stage
+        max_stage_tokens_across_dp_cpu = torch.max(stage_tokens_across_dp_cpu,
+                                                   dim=1)[0]
+
+        return stage_tokens_across_dp_cpu, max_stage_tokens_across_dp_cpu
+
+    @staticmethod
     def make(
         parallel_config: ParallelConfig,
         attn_metadata: Any,
@@ -325,8 +364,8 @@ class ForwardContext:
     # TODO: remove after making all virtual_engines share the same kv cache
     virtual_engine: int  # set dynamically for each forward pass
     # set dynamically for each forward pass
-    dp_metadata: Optional[DPMetadata] = None
-    afd_metadata: Optional[AFDMetadata] = None
+    dp_metadata: DPMetadata | None = None
+    afd_metadata: AFDMetadata | None = None
     # determine the cudagraph style at runtime to be FULL, PIECEWISE, or NONE.
     # by default NONE, no cudagraph is used.
     cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE
@@ -352,23 +391,25 @@ def get_forward_context() -> ForwardContext:
 
 
 def create_forward_context(
-        attn_metadata: Any,
-        vllm_config: VllmConfig,
-        virtual_engine: int = 0,
-        dp_metadata: Optional[DPMetadata] = None,
-        cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
-        batch_descriptor: Optional[BatchDescriptor] = None,
-        ubatch_slices: Optional[UBatchSlices] = None,
-        afd_metadata:Optional[AFDMetadata]= None):
-    return ForwardContext(no_compile_layers=vllm_config.compilation_config.
-                          static_forward_context,
-                          virtual_engine=virtual_engine,
-                          attn_metadata=attn_metadata,
-                          dp_metadata=dp_metadata,
-                          cudagraph_runtime_mode=cudagraph_runtime_mode,
-                          batch_descriptor=batch_descriptor,
-                          ubatch_slices=ubatch_slices,
-                          afd_metadata=afd_metadata)
+    attn_metadata: Any,
+    vllm_config: VllmConfig,
+    virtual_engine: int = 0,
+    dp_metadata: DPMetadata | None = None,
+    cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
+    batch_descriptor: BatchDescriptor | None = None,
+    ubatch_slices: UBatchSlices | None = None,
+    afd_metadata: AFDMetadata | None = None
+):
+    return ForwardContext(
+        no_compile_layers=vllm_config.compilation_config.static_forward_context,
+        virtual_engine=virtual_engine,
+        attn_metadata=attn_metadata,
+        dp_metadata=dp_metadata,
+        cudagraph_runtime_mode=cudagraph_runtime_mode,
+        batch_descriptor=batch_descriptor,
+        ubatch_slices=ubatch_slices,
+        afd_metadata=afd_metadata
+    )
 
 
 @contextmanager
@@ -388,15 +429,16 @@ def override_forward_context(forward_context: Optional[ForwardContext]):
 
 @contextmanager
 def set_forward_context(
-        attn_metadata: Any,
-        vllm_config: VllmConfig,
-        virtual_engine: int = 0,
-        num_tokens: Optional[int] = None,
-        num_tokens_across_dp: Optional[torch.Tensor] = None,
-        cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
-        batch_descriptor: Optional[BatchDescriptor] = None,
-        ubatch_slices: Optional[UBatchSlices] = None,
-        afd_metadata: Optional[AFDMetadata] = None):
+    attn_metadata: Any,
+    vllm_config: VllmConfig,
+    virtual_engine: int = 0,
+    num_tokens: int | None = None,
+    num_tokens_across_dp: torch.Tensor | None = None,
+    cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
+    batch_descriptor: BatchDescriptor | None = None,
+    ubatch_slices: UBatchSlices | None = None,
+    afd_metadata: AFDMetadata | None = None
+):
     """A context manager that stores the current forward context,
     can be attention metadata, etc.
     Here we can inject common logic for every model forward pass.

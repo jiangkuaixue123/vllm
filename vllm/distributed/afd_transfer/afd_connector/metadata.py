@@ -5,15 +5,44 @@ FFN workers."""
 
 import time
 from dataclasses import dataclass
-from typing import Optional, Any, Dict
+from typing import Any, Optional
 
 import torch
-from vllm_ascend.ascend_forward_context import MoECommType
-from dataclasses import dataclass, field
+
+from abc import ABC, abstractmethod
 
 #TODO(yxj):move to AFDExtraFields
-class FFNNeedForwardData:
+from vllm_ascend.ascend_forward_context import MoECommType
+from dataclasses import dataclass, field
+from typing import Dict
 
+
+class AFDRecvHandle(ABC):
+    """
+    Abstract base class for AFD receive handles.
+    
+    This provides a handle interface for managing asynchronous AFD operations,
+    allowing waiting for completion of data transfer operations.
+    """
+    @abstractmethod
+    def __init__(self, handle: Any):
+        """Initialize the AFD receive handle.
+        
+        Args:
+            handle: Backend-specific handle object
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def wait(self):
+        """Wait for the operation associated with this handle to complete.
+        
+        Blocks until the data transfer or computation is finished.
+        """
+        raise NotImplementedError
+
+
+class FFNNeedForwardData:
     def __init__(self,
                  moe_comm_type:Optional[MoECommType] = None,
                  num_input_tokens:int = 0,
@@ -64,7 +93,7 @@ class AFDExtraFields:
 
     def __init__(self, **kwargs):
         self.custom_fields.update(kwargs)
-        
+
 @dataclass
 class AFDConnectorMetadata:
     """Lightweight AFD metadata containing core information needed for
@@ -76,20 +105,27 @@ class AFDConnectorMetadata:
     # multiple sequences
     dtype: torch.dtype
     device: torch.device
+    topk_idx: Optional[torch.Tensor] = None # indices token which expert to be sended
+    topk_weights: Optional[torch.Tensor] = None # the expert weights
+    moe_expert_num: Optional[int] = None # number of moe experts
+    shared_expert_num: Optional[int] = None # number of share experts
+    scale: Optional[torch.Tensor] = None #  quant scale
+    expertTokenNumsOut: Optional[torch.Tensor] = None # The number of tokens received by each expert is used as input for the subsequent GMM.
+    send_handle_list: Optional[list[Any]] = None # the communication handles (list of Work objects returned by torch.distributed.isend)
+    recv_handle_list: Optional[list[Any]] = None # the communication handles (list of Work objects returned by torch.distributed.irecv)
 
-    # Optional fields for debugging and extensibility
-    request_id: Optional[str] = None
-    timestamp: Optional[float] = None
-    """ascend ffn need forward data"""
+    # TODO(jcz): need fix vllm_ascend dependency
     ffn_need_forward_data: Optional[FFNNeedForwardData] = None
     m2n_afdconnector_data: Optional[M2NAFDConnectorMetadata] = None
     cam_afdconnector_data: Optional[CAMAFDConnectorMetadata] = None
     topk_weights: Optional[torch.Tensor] = None
     topk_ids: Optional[torch.Tensor] = None
     row_idx: Optional[torch.Tensor] = None
-    # extra_fields
-    # extra_fields: AFDExtraFields = field(default_factory=AFDExtraFields)
     
+    # Optional fields for debugging and extensibility
+    request_id: Optional[str] = None
+    timestamp: Optional[float] = None
+
     def __post_init__(self):
         """Validate data consistency."""
         if not self.seq_lens:
@@ -140,13 +176,13 @@ class AFDConnectorMetadata:
                    dtype=dtype,
                    device=device,
                    request_id=request_id,
-                   ffn_need_forward_data = ffn_need_forward_data,
-                   m2n_afdconnector_data = m2n_afdconnector_data,
-                   cam_afdconnector_data = cam_afdconnector_data,
-                   timestamp=time.time(),
-                   topk_weights = topk_weights,
-                   topk_ids = topk_ids,
-                   row_idx = row_idx,
+                #    timestamp=time.time(),
+                   ffn_need_forward_data=ffn_need_forward_data,
+                   m2n_afdconnector_data=m2n_afdconnector_data,
+                   cam_afdconnector_data=cam_afdconnector_data,
+                   topk_weights=topk_weights,
+                   topk_ids=topk_ids,
+                   row_idx=row_idx,
                 #    extra_fields = extra_fields
                    )
 

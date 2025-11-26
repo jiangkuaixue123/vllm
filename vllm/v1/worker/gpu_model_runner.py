@@ -32,8 +32,14 @@ from vllm.distributed.kv_transfer import (get_kv_transfer_group,
                                           has_kv_transfer_group)
 from vllm.distributed.kv_transfer.kv_connector.utils import copy_kv_blocks
 from vllm.distributed.parallel_state import (
-    get_pp_group, get_tp_group, get_world_group, graph_capture,
-    is_global_first_rank, prepare_communication_buffer_for_model)
+    get_pp_group,
+    get_tp_group,
+    get_world_group,
+    graph_capture,
+    is_global_first_rank,
+    prepare_communication_buffer_for_model,
+)
+from vllm.forward_context import BatchDescriptor, set_forward_context
 from vllm.forward_context import (AFDMetadata, BatchDescriptor, DPMetadata,
                                   set_forward_context)
 from vllm.logger import init_logger
@@ -105,8 +111,9 @@ from vllm.v1.worker.kv_connector_model_runner_mixin import (
 from vllm.v1.worker.lora_model_runner_mixin import LoRAModelRunnerMixin
 from vllm.v1.worker.ubatch_splitting import (check_ubatch_thresholds,
                                              ubatch_split)
-from vllm.v1.worker.ubatch_utils import UBatchSlice, UBatchSlices
+from vllm.v1.worker.ubatch_utils import UBatchSlice, UBatchSlices, check_ubatch_thresholds
 from vllm.v1.worker.utils import is_residual_scattered_for_sp
+from vllm.platforms import current_platform
 
 from .utils import (AttentionGroup, MultiModalBudget,
                     add_kv_sharing_layers_to_kv_cache_groups, bind_kv_cache,
@@ -945,7 +952,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         assert total_num_scheduled_tokens > 0
         num_reqs = self.input_batch.num_reqs
         assert num_reqs > 0
-
+        logger.info(f"nums_reqs: {num_reqs}")
         # OPTIMIZATION: Start copying the block table first.
         # This way, we can overlap the copy with the following CPU operations.
         self.input_batch.block_table.commit_block_table(num_reqs)
@@ -1254,7 +1261,22 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                             in kv_cache_group_spec.layer_names):
                         spec_decode_common_attn_metadata = common_attn_metadata
                 else:
-                    spec_decode_common_attn_metadata = common_attn_metadata
+                    afd_tokens_start_loc = [0]
+                    afd_reqs_start_loc = [0]
+                    afd_tokens_lens = [num_tokens_unpadded]
+                afd_metadata = AFDMetadata(
+                    afd_tokens_start_loc=afd_tokens_start_loc,
+                    afd_reqs_start_loc=afd_reqs_start_loc,
+                    afd_stage_idx=0,
+                    afd_connector=self.afd_connector,
+                    afd_tokens_lens=afd_tokens_lens,
+                )
+            else:
+                afd_metadata = None
+
+            if self.speculative_config and \
+                spec_decode_common_attn_metadata is None:
+                spec_decode_common_attn_metadata = common_attn_metadata
 
             for attn_group in self.attn_groups[kv_cache_group_id]:
                 # Prepare for cascade attention if enabled & beneficial.
@@ -1974,6 +1996,55 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         ubatch_slices[1] = UBatchSlice(padded_second_ubatch_slice,
                                        padded_second_ubatch_slice)
 
+    def get_afd_padding(
+            self, afd_tokens_start_loc: list[int],
+            afd_tokens_lens: list[int]) -> tuple[int, list[int], list[int]]:
+
+        afd_tokens_start_loc = list(afd_tokens_start_loc)
+        afd_tokens_lens = list(afd_tokens_lens)
+        original_max_end_loc = afd_tokens_start_loc[-1]
+
+        # 1. Stage count padding: pad to reach required num_stages by adding
+        # dummy stages.
+        if len(afd_tokens_start_loc) - 1 < self.num_stages:
+            missing = self.num_stages - (len(afd_tokens_start_loc) - 1)
+            for _ in range(missing):
+                afd_tokens_lens.append(0)
+
+        # 2. Stage-wise DP padding: pad each stage to max tokens across DP
+        # ranks.
+        if self.vllm_config.parallel_config.data_parallel_size > 1:
+            dp_size = self.vllm_config.parallel_config.data_parallel_size
+            dp_rank = self.vllm_config.parallel_config.data_parallel_rank
+            _, max_tokens_cpu = DPMetadata.num_stage_tokens_across_dp(
+                afd_tokens_lens, dp_size, dp_rank)
+            afd_tokens_lens = max_tokens_cpu.tolist()
+
+        # 3. If using CUDA graphs on attention server, pad each stage length
+        # up to the next configured cudagraph capture size so that each stage
+        # matches a captured graph size.
+        if (self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE
+                and self.afd_config and self.afd_config.is_attention_server):
+
+            def pad_to_capture_size(n: int) -> int:
+                for s in self.cudagraph_batch_sizes:
+                    if n <= s // self.num_stages:
+                        return s // self.num_stages
+                return n
+
+            afd_tokens_lens = [pad_to_capture_size(n) for n in afd_tokens_lens]
+
+        # Recompute start locations from lengths to ensure consistency after
+        # padding.
+        new_start_loc = [afd_tokens_start_loc[0]]
+        running = afd_tokens_start_loc[0]
+        for length in afd_tokens_lens:
+            running += length
+            new_start_loc.append(running)
+
+        num_pad = new_start_loc[-1] - original_max_end_loc
+        return num_pad, new_start_loc, afd_tokens_lens
+
     def _pool(
         self,
         hidden_states: torch.Tensor,
@@ -2351,6 +2422,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                  ,
                  afd_metadata) = self._prepare_inputs(scheduler_output)
 
+            logger.info(f"jcz execute_model ubatch_slices:{ubatch_slices}")
+            logger.info(f"jcz execute_model num_tokens_across_dp:{num_tokens_across_dp}")
+            logger.info(f"jcz execute_model afd_metadata:{afd_metadata}")
             (
                 num_scheduled_tokens,
                 num_input_tokens,
@@ -2409,6 +2483,18 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
         if ubatch_slices is not None:
             num_input_tokens = ubatch_slices[0].num_tokens
 
+            uniform_decode = (max_query_len
+                              == self.uniform_decode_query_len) and (
+                                  num_scheduled_tokens
+                                  == self.input_batch.num_reqs * max_query_len)
+            batch_descriptor = BatchDescriptor(num_tokens=num_input_tokens,
+                                               uniform_decode=uniform_decode)
+            if self.afd_config:
+                cudagraph_runtime_mode = CUDAGraphMode.NONE
+            else:
+                cudagraph_runtime_mode, batch_descriptor = \
+                    self.cudagraph_dispatcher.dispatch(batch_descriptor)
+
         # Run the model.
         # Use persistent buffers for CUDA graphs.
         with (set_forward_context(
@@ -2419,7 +2505,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 cudagraph_runtime_mode=cudagraph_runtime_mode,
                 batch_descriptor=batch_descriptor,
                 ubatch_slices=ubatch_slices,
-                afd_metadata=afd_metadata,
+                afd_metadata=afd_metadata
         ), record_function_or_nullcontext("Forward"),
               self.maybe_get_kv_connector_output(scheduler_output) as
               kv_connector_output):
@@ -3085,6 +3171,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 ]
                 afd_tokens_lens[-1] += num_tokens % num_tokens_per_stage
                 afd_tokens_start_loc[-1] = num_tokens
+                afd_tokens_start_loc = afd_tokens_start_loc[:-1]
                 afd_metadata = AFDMetadata(
                     afd_tokens_start_loc=afd_tokens_start_loc,
                     afd_reqs_start_loc=afd_reqs_start_loc,
@@ -3320,7 +3407,8 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                     cudagraph_runtime_mode=cudagraph_runtime_mode,
                     batch_descriptor=batch_descriptor,
                     ubatch_slices=ubatch_slices,
-                    afd_metadata=afd_metadata):
+                    afd_metadata=afd_metadata
+                ):
                 outputs = self.model(
                     input_ids=input_ids,
                     positions=positions,
