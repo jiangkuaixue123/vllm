@@ -69,10 +69,10 @@ from vllm.logger import init_logger
 logger = init_logger(__name__)
 
 from vllm.forward_context import get_forward_context
-from vllm.v1.worker.ubatching import dbo_current_ubatch_id, dbo_yield, dbo_enabled
 from vllm.forward_context import AFDMetadata
 # TODO(jcz): need remove vllm_ascend dependency
 from vllm_ascend.ops.moe.experts_selector import select_experts
+from vllm_ascend.worker.ubatching import dbo_current_ubatch_id, dbo_yield, dbo_enabled
 
 class DeepseekV2MLP(nn.Module):
 
@@ -1067,12 +1067,11 @@ class DeepseekV2Model(nn.Module):
         forward_ctx = get_forward_context()
         afd_metadata = (forward_ctx.afd_metadata
                         if forward_ctx is not None else None)
-        if afd_metadata != None:
+        if afd_metadata is not None:
             hidden_states, residual = self.forward_m2n(hidden_states, residual, positions, afd_metadata)
         else:
             for layer in islice(self.layers, self.start_layer, self.end_layer):
                 hidden_states, residual = layer(positions, hidden_states, residual)
-
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
