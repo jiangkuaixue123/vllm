@@ -1028,7 +1028,10 @@ class DeepseekV2Model(nn.Module):
                 metadata.m2n_afdconnector_data.handle = handle
                 hidden_states = afd_connector.recv_ffn_output(hidden_states,metadata)
             elif self.connector_name == "camconnector":
-                afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
+                output_list = afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
+                hidden_states1, dynamic_scales, expandIdx, expertTokenNums, epRecvCounts, simulateExpertIds, simulateExpertScales, attenBatchSize = output_list[0:8]
+                handle = [simulateExpertIds, simulateExpertScales, expandIdx, epRecvCounts, attenBatchSize]
+                metadata.cam_afdconnector_data.handle = handle
                 hidden_states = afd_connector.recv_ffn_output(hidden_states, metadata)
             else:
                 afd_connector.send_attn_output(hidden_states = current_hidden,
