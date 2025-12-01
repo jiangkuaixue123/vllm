@@ -855,6 +855,7 @@ class DeepseekV2DecoderLayer(nn.Module):
                 top_k=8,
                 use_grouped_topk=False,
                 renormalize=True,
+                e_score_correction_bias=self.gate.e_score_correction_bias,
                 )
         
             topk_weights = topk_weights.to(torch.float)

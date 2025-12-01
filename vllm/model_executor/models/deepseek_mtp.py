@@ -169,7 +169,7 @@ class DeepSeekMTP(nn.Module, SupportsPP):
             ("gate_up_proj", "up_proj", 1),
             ("fused_qkv_a_proj", "q_a_proj", 0),
             ("fused_qkv_a_proj", "kv_a_proj_with_mqa", 1),
-        ]
+        ] # 融合参数：gate、up、QKV融合
 
         expert_params_mapping = FusedMoE.make_expert_params_mapping(
             ckpt_gate_proj_name="gate_proj",
@@ -274,4 +274,9 @@ class DeepSeekMTP(nn.Module, SupportsPP):
         elif shared_weight:
             # treat shared weights as top level weights
             name = name.replace(f"model.layers.{spec_layer}.", "model.")
+        
+        # 将 mlp.gate 映射到 gate
+        if ".mtp_block.mlp.gate." in name:
+            name = name.replace(".mtp_block.mlp.gate.", ".mtp_block.gate.")
+        
         return name
