@@ -622,6 +622,7 @@ class GPUModelRunner(
             profile_memory=False,
             with_stack=False
         )
+        logger.info("jcz GPUModelRunner profile dir: %s", profile_dir)
 
     def reset_mm_cache(self) -> None:
         if self.mm_budget:
