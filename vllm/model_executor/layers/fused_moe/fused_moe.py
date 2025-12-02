@@ -1558,6 +1558,7 @@ def torch_vllm_inplace_fused_experts(**kwargs) -> torch.Tensor:
 
 
 def torch_vllm_outplace_fused_experts(**kwargs) -> torch.Tensor:
+    logger.info("jcz torch_vllm_outplace_fused_experts")
     return torch.ops.vllm.outplace_fused_experts(**kwargs)
 
 

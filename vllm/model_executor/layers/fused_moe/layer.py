@@ -1577,6 +1577,7 @@ class FusedMoE(CustomOp):
                     num_fused_shared_experts=self.num_fused_shared_experts,
                 )
             else:
+                logger.info("jcz select_experts grouped_topk")
                 grouped_topk_impl = grouped_topk
 
             topk_weights, topk_ids = grouped_topk_impl(
