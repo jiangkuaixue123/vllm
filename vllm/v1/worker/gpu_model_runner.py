@@ -3039,6 +3039,7 @@ class GPUModelRunner(
         afd_metadata = self._build_afd_metadata(ubatch_slices, num_tokens_unpadded)
 
         self.profiler.step()
+        logger.info("jcz self.profile step")
         # Run the model.
         # Use persistent buffers for CUDA graphs.
         with (
