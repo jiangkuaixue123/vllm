@@ -612,12 +612,12 @@ class GPUModelRunner(
         # Ephemeral state transferred between execute_model() and sample_tokens().
         self.execute_model_state: ExecuteModelState | None = None
         self.kv_connector_output: KVConnectorOutput | None = None
+            # schedule=torch.profiler.schedule(wait=6000+4000, warmup=1, active=30, repeat=1),
 
         profile_dir = './profiler_logs/attn' if self.afd_config is not None and self.afd_config.afd_role == "attention" else './profiler_logs/normal'
         self.profiler = torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-            # schedule=torch.profiler.schedule(wait=6000+4000, warmup=1, active=30, repeat=1),
-            schedule=torch.profiler.schedule(wait=0, warmup=1, active=10, repeat=1),
+            schedule=torch.profiler.schedule(wait=1, warmup=1, active=10, repeat=1),
             on_trace_ready=torch.profiler.tensorboard_trace_handler(profile_dir),
             record_shapes=True,
             profile_memory=False,
