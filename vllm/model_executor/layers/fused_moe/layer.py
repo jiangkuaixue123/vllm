@@ -1725,9 +1725,11 @@ class FusedMoE(CustomOp):
                     hidden_states, router_logits
                 )
             else:
+                logger.info("jcz moe_forward_shared")
                 shared_output, fused_output = torch.ops.vllm.moe_forward_shared(
                     hidden_states, router_logits, self.layer_name
                 )
+                logger.info("jcz moe_forward_shared done")
             return (
                 reduce_output(shared_output)[..., :og_hidden_states],
                 reduce_output(fused_output)[..., :og_hidden_states],
@@ -2120,6 +2122,7 @@ def moe_forward_shared(
     forward_context: ForwardContext = get_forward_context()
     self = forward_context.no_compile_layers[layer_name]
     assert self.shared_experts is not None
+    logger.info(f"jcz moe_forward_shared {self}")
     return self.forward_impl(hidden_states, router_logits)
 
 
