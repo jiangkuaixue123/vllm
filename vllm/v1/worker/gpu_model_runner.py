@@ -616,13 +616,15 @@ class GPUModelRunner(
         profile_dir = './profiler_logs/attn' if self.afd_config is not None and self.afd_config.afd_role == "attention" else './profiler_logs/normal'
         self.profiler = torch.profiler.profile(
             activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
-            schedule=torch.profiler.schedule(wait=6000+4000, warmup=1, active=30, repeat=1),
+            # schedule=torch.profiler.schedule(wait=6000+4000, warmup=1, active=30, repeat=1),
+            schedule=torch.profiler.schedule(wait=0, warmup=1, active=10, repeat=1),
             on_trace_ready=torch.profiler.tensorboard_trace_handler(profile_dir),
             record_shapes=True,
             profile_memory=False,
             with_stack=False
         )
         logger.info("jcz GPUModelRunner profile dir: %s", profile_dir)
+        self.profile_step = 0
 
     def reset_mm_cache(self) -> None:
         if self.mm_budget:
@@ -3039,7 +3041,8 @@ class GPUModelRunner(
         afd_metadata = self._build_afd_metadata(ubatch_slices, num_tokens_unpadded)
 
         self.profiler.step()
-        logger.info("jcz self.profile step")
+        self.profile_step += 1
+        logger.info(f"jcz self.profile step {self.profile_step}")
         # Run the model.
         # Use persistent buffers for CUDA graphs.
         with (
