@@ -1594,11 +1594,13 @@ def fused_experts(
     # E8M0 scale, which means we requantize the weight and input to the specific
     # scale. Fallen back to cutlass or triton for some cases would cause
     # accuracy issue.
+    logger.info("jcz fused_experts 1")
     if (
         allow_deep_gemm
         and quant_config.use_fp8_w8a8
         and (is_deep_gemm_e8m0_used() or _valid_deep_gemm(hidden_states, w1, w2))
     ):
+        logger.info("jcz fused_experts 2")
         assert quant_config is not None
         assert apply_router_weight_on_input is False
         return deep_gemm_moe_fp8(
@@ -1625,6 +1627,7 @@ def fused_experts(
         )
     ):
         assert quant_config is not None
+        logger.info("jcz fused_experts 3")
         return run_cutlass_block_scaled_fused_experts(
             a=hidden_states,
             w1=w1,
@@ -1635,6 +1638,7 @@ def fused_experts(
             topk_ids=topk_ids,
         )
     else:
+        logger.info("jcz fused_experts 4")
         return dispatch_fused_experts_func(inplace)(
             hidden_states=hidden_states,
             w1=w1,

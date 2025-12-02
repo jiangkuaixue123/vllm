@@ -295,6 +295,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
             assert logical_to_physical_map is not None
             assert logical_replica_count is not None
 
+        logger.info("jcz UnquantizedFusedMoEMethod apply")
         return self.forward(
             x=x,
             layer=layer,
@@ -352,6 +353,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         logical_to_physical_map: torch.Tensor | None = None,
         logical_replica_count: torch.Tensor | None = None,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        logger.info("jcz UnquantizedFusedMoEMethod forward_cuda 1")
         topk_weights, topk_ids, zero_expert_result = layer.select_experts(
             hidden_states=x,
             router_logits=router_logits,
@@ -369,6 +371,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
                 apply_router_weight_on_input=apply_router_weight_on_input,
             )
         elif self.flashinfer_cutlass_moe_enabled:
+            logger.info("jcz UnquantizedFusedMoEMethod forward_cuda 2")
             return self.flashinfer_cutlass_moe(
                 hidden_states=x,
                 w1=layer.w13_weight,
@@ -379,6 +382,7 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
                 apply_router_weight_on_input=apply_router_weight_on_input,
             )
         else:
+            logger.info("jcz UnquantizedFusedMoEMethod forward_cuda 3")
             result = fused_experts(
                 hidden_states=x,
                 w1=layer.w13_weight,

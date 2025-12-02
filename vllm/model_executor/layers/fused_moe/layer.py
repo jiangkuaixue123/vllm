@@ -1912,7 +1912,9 @@ class FusedMoE(CustomOp):
         if self.gate is not None:
             router_logits, _ = self.gate(hidden_states)
 
+        logger.info("jcz FusedMoe forward 1")
         if use_chunked_impl:
+            logger.info("jcz FusedMoe forward 2")
             return self.forward_impl_chunked(
                 hidden_states, router_logits, has_separate_shared_experts
             )
@@ -1930,6 +1932,7 @@ class FusedMoE(CustomOp):
 
         with sp_ctx:
             if do_naive_dispatch_combine:
+                logger.info("jcz FusedMoe forward 2")
                 hidden_states_combined, router_logits = get_ep_group().dispatch(
                     hidden_states, router_logits, self.is_sequence_parallel
                 )
@@ -1937,12 +1940,14 @@ class FusedMoE(CustomOp):
             # because matrix multiply maybe modify the hidden_states.
             if has_separate_shared_experts and not use_shared_experts_stream:
                 assert self.shared_experts is not None
+                logger.info("jcz FusedMoe forward 3")
                 shared_output = self.shared_experts(hidden_states)
 
             # NOTE: Similar with DP, PCP also needs dispatch and combine. For
             # simplicity, AgRsAll2All was added separately for PCP here. Maybe
             # we should modify All2AllManager abstract to better support PCP.
             if self.pcp_size > 1:
+                logger.info("jcz FusedMoe forward 4")
                 hidden_states = get_pcp_group().all_gather(
                     hidden_states,
                     dim=0,
@@ -1953,6 +1958,7 @@ class FusedMoE(CustomOp):
                 )
 
             # Matrix multiply.
+            logger.info(f"jcz FusedMoe forward begin quant_method:{self.quant_method}")
             final_hidden_states = self.quant_method.apply(
                 layer=self,
                 x=hidden_states_combined
@@ -1979,6 +1985,7 @@ class FusedMoE(CustomOp):
                 logical_to_physical_map=self.logical_to_physical_map,
                 logical_replica_count=self.logical_replica_count,
             )
+            logger.info(f"jcz FusedMoe forward done quant_method:{self.quant_method}")
 
             if has_separate_shared_experts:
                 assert self.shared_experts is not None
