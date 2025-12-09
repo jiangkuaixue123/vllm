@@ -623,14 +623,14 @@ def unified_attention(
 
     forward_context: ForwardContext = get_forward_context()
     attn_metadata = forward_context.attn_metadata
+    if afd_metadata is not None and isinstance(attn_metadata, list):
+        afd_stage_idx = afd_metadata.afd_stage_idx
+        if afd_stage_idx < len(attn_metadata):
+            attn_metadata = attn_metadata[afd_stage_idx]
+        else:
+            attn_metadata = None  # padding
     if isinstance(attn_metadata, dict):
         attn_metadata = attn_metadata[layer_name]
-        if forward_context.afd_metadata:
-            afd_stage_idx = forward_context.afd_metadata.afd_stage_idx
-            if afd_stage_idx < len(attn_metadata):
-                attn_metadata = attn_metadata[afd_stage_idx]
-            else:
-                attn_metadata = None  # padding
     self = forward_context.no_compile_layers[layer_name]
     kv_cache = self.kv_cache[forward_context.virtual_engine]
     output = self.impl.forward(self, query, key, value, kv_cache,
