@@ -48,7 +48,7 @@ class TorchCompileWrapperWithCustomDispatcher:
 
             compiled_callable = torch.compile(self.forward,
                                               fullgraph=True,
-                                              backend=backend,
+                                              backend="eager",
                                               options=options)
 
         self.compiled_callable = compiled_callable

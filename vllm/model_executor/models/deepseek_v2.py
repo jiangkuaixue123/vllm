@@ -28,7 +28,9 @@ from collections.abc import Callable, Iterable
 from itertools import islice
 from typing import Any, Optional, Union
 
+
 import torch
+import torch_npu, torchair
 from torch import nn
 from transformers import DeepseekV2Config, DeepseekV3Config
 
@@ -1048,6 +1050,169 @@ class DeepseekV2Model(nn.Module):
                 dbo_yield()
         return hidden_states, residual
 
+    def forward_m2n_ubatch(
+            self,
+            ubatch_hidden_states: list[torch.Tensor],
+            ubatch_residual: list[Optional[torch.Tensor]],
+            ubatch_positions: list[torch.Tensor],
+            afd_metadata: AFDMetadata
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        recv_handle = None
+
+        forward_ctx = get_forward_context()
+        current_attn_metadata = forward_ctx.attn_metadata
+        moe_comm_type = forward_ctx.moe_comm_type
+        with_prefill = forward_ctx.with_prefill
+        afd_connector = afd_metadata.afd_connector
+
+        num_ubatches = len(ubatch_hidden_states)
+        ubatch_metadata: list[Optional[AFDConnectorMetadata]] = [None] * num_ubatches
+        for layer_idx in range(self.start_layer, self.end_layer):
+            layer = self.layers[layer_idx]
+
+            if layer.layer_idx < self.first_k_dense_replace:
+                # Compute dense layers on attn side.
+                for ubatch_idx in range(num_ubatches):
+                    if isinstance(current_attn_metadata, list):
+                        # update the attn_metadata of forward_ctx in current ubatch.
+                        ubatch_attn_metadata = current_attn_metadata[ubatch_idx]
+                        forward_ctx.attn_metadata = ubatch_attn_metadata
+                    current_hidden = ubatch_hidden_states[ubatch_idx]
+                    current_residual = ubatch_residual[ubatch_idx]
+                    current_positions = ubatch_positions[ubatch_idx]
+
+                    current_hidden, current_residual = layer(current_positions, current_hidden, current_residual)
+
+                    ubatch_hidden_states[ubatch_idx].copy_(current_hidden)
+                    ubatch_residual[ubatch_idx] = current_residual
+                continue
+
+            if recv_handle is not None:
+                for work in recv_handle:
+                    work.wait()
+
+            # compute using ubatch
+            for ubatch_idx in range(num_ubatches):
+                afd_metadata.afd_stage_idx = ubatch_idx
+                if isinstance(current_attn_metadata, list):
+                    ubatch_attn_metadata = current_attn_metadata[ubatch_idx]
+                    forward_ctx.attn_metadata = ubatch_attn_metadata
+
+                if layer_idx > self.first_k_dense_replace:
+                    if self.connector_name == "m2nconnector":
+                        torchair.ops.npu_print("before recv_ffn_output,ubatch_hidden_states[ubatch_idx]=", ubatch_hidden_states[ubatch_idx],"layer.layer_idx is " ,layer.layer_idx,"ubatch_idx is ",ubatch_idx, summarize_size=2)
+                        recv_hidden_states = afd_connector.recv_ffn_output(ubatch_hidden_states[ubatch_idx],
+                                                                           ubatch_metadata[ubatch_idx])
+                    elif self.connector_name == "camconnector":
+                        recv_hidden_states = afd_connector.recv_ffn_output(ubatch_hidden_states[ubatch_idx],
+                                                                           ubatch_metadata[ubatch_idx])
+                    else:
+                        recv_hidden_states, _ = afd_connector.recv_ffn_output()
+                    ubatch_hidden_states[ubatch_idx].copy_(recv_hidden_states)
+
+                current_hidden = ubatch_hidden_states[ubatch_idx]
+                current_residual = ubatch_residual[ubatch_idx]
+                current_positions = ubatch_positions[ubatch_idx]
+
+                if self.enforce_eager:
+                    start_idx = afd_metadata.afd_tokens_start_loc[afd_metadata.afd_stage_idx]
+                    end_idx = start_idx + afd_metadata.afd_tokens_lens[afd_metadata.afd_stage_idx]
+                    logger.info(
+                        f"ttg deepseekv2 layer_idx:{layer.layer_idx} metadata:{afd_metadata}, "
+                        f"hidden_states:{current_hidden.shape}")
+                    logger.info(
+                        f"ttg deepseekv2 layer_idx:{layer.layer_idx} start_loc:{afd_metadata.afd_tokens_start_loc} "
+                        f"start_idx:{start_idx} end_idx:{end_idx} "
+                        f"stage_idx:{afd_metadata.afd_stage_idx}")
+                torchair.ops.npu_print("before compute_attn_output,current_hidden= ", current_hidden,"layer.layer_idx is " ,layer.layer_idx,"ubatch_idx is ",ubatch_idx,summarize_size=2)
+                current_hidden, current_residual, topk_weights, topk_ids, row_idx, router_logits = \
+                    layer.compute_attn_output(current_positions, current_hidden, current_residual)
+                if self.connector_name == "m2nconnector":
+                    from vllm_ascend.distributed.M2NAFDConnector import M2NAFDConnectorMetadata
+                    m2n_afdconnector_data = M2NAFDConnectorMetadata()
+                    m2n_afdconnector_data.moe_expert_num = 64
+                    m2n_afdconnector_data.quant_mode = 0
+                    m2n_afdconnector_data.aiv_num = 48
+                    m2n_afdconnector_data.scale = None
+                if self.connector_name == "camconnector":
+                    from vllm_ascend.distributed.CAMAFDConnector import CAMAFDConnectorMetadata
+                    cam_afdconnector_data = CAMAFDConnectorMetadata(
+                        moe_expert_num=64,
+                        shared_expert_num=0,
+                        scale=None,
+                        handle=None,
+                        quant_mode=0,
+                        aiv_num=48,
+                        batch_size=4,
+                        h=2048,
+                        k=8
+                    )
+
+                num_tokens = current_hidden.shape[0]
+                ffn_need_forward_data = FFNNeedForwardData(moe_comm_type, num_tokens, with_prefill)
+
+                metadata = AFDConnectorMetadata.create_attention_metadata(
+                    layer_idx=layer.layer_idx,
+                    stage_idx=afd_metadata.afd_stage_idx,
+                    seq_len=current_hidden.shape[0],
+                    dtype=current_hidden.dtype,
+                    device=current_hidden.device,
+                    ffn_need_forward_data=ffn_need_forward_data,
+                    m2n_afdconnector_data=m2n_afdconnector_data if self.connector_name == "m2nconnector" else None,
+                    cam_afdconnector_data=cam_afdconnector_data if self.connector_name == "camconnector" else None,
+                )
+                ubatch_metadata[ubatch_idx] = metadata
+
+                if self.connector_name == "m2nconnector":
+                    #logger.info(f"ttg deepseekv2 layer_idx:{layer.layer_idx} start send_attn_output")
+                    torchair.ops.npu_print("before send_attn_output,current_hidden= ", current_hidden,"layer.layer_idx is " ,layer.layer_idx,"ubatch_idx is ",ubatch_idx,summarize_size=2)
+                    handle = afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
+                    ubatch_metadata[ubatch_idx].m2n_afdconnector_data.handle = handle
+                elif self.connector_name == "camconnector":
+                    afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
+                else:
+                    afd_connector.send_attn_output(hidden_states=current_hidden,
+                                                   router_logits=router_logits,
+                                                   topk_weights=topk_weights,
+                                                   topk_ids=topk_ids,
+                                                   row_idx=row_idx,
+                                                   metadata=metadata)
+                ubatch_residual[ubatch_idx] = current_residual
+            #logger.info(f"ttg deepseekv2 layer_idx:{layer.layer_idx} finish")
+
+        for ubatch_idx in range(num_ubatches):
+            if self.connector_name == "m2nconnector":
+                torchair.ops.npu_print("last before recv_ffn_output,ubatch_hidden_states[ubatch_idx]= ", ubatch_hidden_states[ubatch_idx],"layer.layer_idx is " ,layer.layer_idx,"ubatch_idx is ",ubatch_idx,summarize_size=2)
+                recv_hidden_states = afd_connector.recv_ffn_output(ubatch_hidden_states[ubatch_idx],
+                                                                   ubatch_metadata[ubatch_idx])
+            elif self.connector_name == "camconnector":
+                recv_hidden_states = afd_connector.recv_ffn_output(ubatch_hidden_states[ubatch_idx],
+                                                                   ubatch_metadata[ubatch_idx])
+            else:
+                recv_hidden_states, _ = afd_connector.recv_ffn_output()
+            ubatch_hidden_states[ubatch_idx].copy_(recv_hidden_states)
+
+        #logger.info(f"ttg deepseekv2 start cat hidden_states results")
+        hidden_states = torch.cat([
+            ubatch_hidden_states[i][:afd_metadata.afd_tokens_lens[i]]
+            for i in range(num_ubatches)
+        ], dim=0)
+
+        #logger.info(f"ttg deepseekv2 start cat residual results")
+        if ubatch_residual[0] is not None:
+            residual = torch.cat([
+                ubatch_residual[i][:afd_metadata.afd_tokens_lens[i]]
+                if ubatch_residual[i] is not None else
+                ubatch_hidden_states[i][:afd_metadata.afd_tokens_lens[i]]
+                for i in range(num_ubatches)
+            ], dim=0)
+        else:
+            residual = None
+
+        #logger.info(f"ttg deepseekv2 finish forward")
+
+        return hidden_states, residual
+    
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -1068,13 +1233,61 @@ class DeepseekV2Model(nn.Module):
 
         # TODO(jcz): later need fix this
         forward_ctx = get_forward_context()
+        current_attn_metadata = forward_ctx.attn_metadata
         afd_metadata = (forward_ctx.afd_metadata
                         if forward_ctx is not None else None)
-        if afd_metadata is not None:
-            hidden_states, residual = self.forward_m2n(hidden_states, residual, positions, afd_metadata)
+        ubatch_slices = (forward_ctx.ubatch_slices if forward_ctx is not None else None)
+        if ubatch_slices is not None and len(ubatch_slices) > 1:
+            if self.enforce_eager:
+                logger.info(f"forward layer using ubatch, ubatch_slices: {ubatch_slices}")
+            ubatch_hidden_states: list[torch.Tensor] = []
+            ubatch_residual: list[Optional[torch.Tensor]] = []
+            ubatch_positions: list[torch.Tensor] = []
+            for i, ubatch_slice in enumerate(ubatch_slices):
+                tokens_slice = ubatch_slice.token_slice
+
+                # ubatch split
+                ubatch_hidden_states.append(hidden_states[tokens_slice].clone())
+                ubatch_residual.append(residual[tokens_slice].clone() if residual is not None else None)
+                if positions.ndim == 2:
+                    ubatch_positions.append(positions[:, tokens_slice])
+                else:
+                    ubatch_positions.append(positions[tokens_slice])
+
+            if afd_metadata is not None:
+                hidden_states, residual = self.forward_m2n_ubatch(ubatch_hidden_states, ubatch_residual,
+                                                                  ubatch_positions, afd_metadata)
+            else:
+                num_ubatches = len(ubatch_slices)
+                for layer in islice(self.layers, self.start_layer, self.end_layer):
+                    for ubatch_idx in range(num_ubatches):
+                        if isinstance(current_attn_metadata, list):
+                            ubatch_attn_metadata = current_attn_metadata[ubatch_idx]
+                            forward_ctx.attn_metadata = ubatch_attn_metadata
+                        current_hidden = ubatch_hidden_states[ubatch_idx]
+                        current_residual = ubatch_residual[ubatch_idx]
+                        current_positions = ubatch_positions[ubatch_idx]
+                        current_hidden, current_residual = layer(current_positions, current_hidden, current_residual)
+
+                        ubatch_hidden_states[ubatch_idx] = current_hidden
+                        ubatch_residual[ubatch_idx] = current_residual
+
+                hidden_states = torch.cat([
+                    ubatch_hidden_states[i] for i in range(num_ubatches)
+                ], dim=0)
+
+                if ubatch_residual[0] is not None:
+                    residual = torch.cat([
+                        ubatch_residual[i] for i in range(num_ubatches)
+                    ], dim=0)
+                else:
+                    residual = None
         else:
-            for layer in islice(self.layers, self.start_layer, self.end_layer):
-                hidden_states, residual = layer(positions, hidden_states, residual)
+            if afd_metadata is not None:
+                hidden_states, residual = self.forward_m2n(hidden_states, residual, positions, afd_metadata)
+            else:
+                for layer in islice(self.layers, self.start_layer, self.end_layer):
+                    hidden_states, residual = layer(positions, hidden_states, residual)
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({

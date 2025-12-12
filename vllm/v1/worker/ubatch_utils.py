@@ -51,7 +51,7 @@ def create_ubatch_slices(
     np.cumsum(num_scheduled_tokens, dtype=np.int32, out=cu_num_tokens[1:])
 
     first_ubatch_token_slice = slice(0, split_point)
-    second_ubatch_token_slice = slice(split_point, cu_num_tokens[-1])
+    second_ubatch_token_slice = slice(split_point, int(cu_num_tokens[-1]))
 
     # Determine request slices using exclusive stop semantics
     # First ubatch includes requests whose tokens overlap [0, split_point)
