@@ -15,7 +15,7 @@ from unittest.mock import patch
 import msgspec
 import zmq
 
-from vllm.config import CacheConfig, ParallelConfig, VllmConfig
+from vllm.config import AFDConfig, CacheConfig, ParallelConfig, VllmConfig
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.ray.ray_env import get_env_vars_to_copy
@@ -737,6 +737,7 @@ def launch_core_engines(
             vllm_config.cache_config,
             local_engine_manager,
             coordinator.proc if coordinator else None,
+            vllm_config.afd_config,
         )
 
 
@@ -748,6 +749,7 @@ def wait_for_engine_startup(
     cache_config: CacheConfig,
     proc_manager: Optional[CoreEngineProcManager],
     coord_process: Optional[Process],
+    afd_config: AFDConfig | None = None,
 ):
     # Wait for engine core process(es) to send ready messages.
     local_count = parallel_config.data_parallel_size_local
@@ -834,6 +836,13 @@ def wait_for_engine_startup(
             conn_pending[0 if local else 1] -= 1
             start_pending[0 if local else 1] += 1
             engine.state = CoreEngineState.CONNECTED
+        elif (
+            status == "READY"
+            and engine.state == CoreEngineState.CONNECTED
+            and afd_config
+            and afd_config.afd_role == "ffn"
+        ):
+            engine.state = CoreEngineState.READY
         elif status == "READY" and engine.state == CoreEngineState.CONNECTED:
             # Setup KV cache config with initialization state from
             # engine core process. Sum values from all engines in DP case.
