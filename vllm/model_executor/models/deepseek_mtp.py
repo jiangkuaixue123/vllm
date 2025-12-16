@@ -141,7 +141,8 @@ class DeepSeekMTP(nn.Module, SupportsPP):
         self.model = DeepSeekMultiTokenPredictor(vllm_config=vllm_config,
                                                  prefix=maybe_prefix(
                                                      prefix, "model"))
-
+        self.speculative_config=vllm_config.speculative_config
+        self.afd_config=vllm_config.afd_config
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -274,9 +275,10 @@ class DeepSeekMTP(nn.Module, SupportsPP):
         elif shared_weight:
             # treat shared weights as top level weights
             name = name.replace(f"model.layers.{spec_layer}.", "model.")
-        
+
         # 将 mlp.gate 映射到 gate
-        if ".mtp_block.mlp.gate." in name:
-            name = name.replace(".mtp_block.mlp.gate.", ".mtp_block.gate.")
-        
+        if getattr(self.speculative_config, 'method', None) and self.afd_config:
+            if ".mtp_block.mlp.gate." in name:
+                name = name.replace(".mtp_block.mlp.gate.", ".mtp_block.gate.")
+
         return name
