@@ -125,6 +125,7 @@ class DeepseekV2MoE(nn.Module):
         parallel_config: ParallelConfig,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
+        is_mtp=False,
     ):
         super().__init__()
         self.tp_size = get_tensor_model_parallel_world_size()
@@ -145,7 +146,7 @@ class DeepseekV2MoE(nn.Module):
                              "Only silu is supported for now.")
         vllm_config = get_current_vllm_config()
         self.afd_config = getattr(vllm_config, "afd_config", None)
-        if self.afd_config is None or not self.afd_config.compute_gate_on_attention:
+        if self.afd_config is None or not self.afd_config.compute_gate_on_attention or is_mtp:
             self.gate = ReplicatedLinear(config.hidden_size,
                                         config.n_routed_experts,
                                         bias=False,
