@@ -135,6 +135,9 @@ class MultiprocExecutor(Executor):
         self.output_rank = self._get_output_rank()
         self.has_connector = self.vllm_config.kv_transfer_config is not None
 
+        self.afd_config = self.vllm_config.afd_config
+        self.afd_role = self.afd_config.afd_role if self.afd_config else None
+
     def start_worker_monitor(self):
         workers = self.workers
         self_ref = weakref.ref(self)
@@ -435,6 +438,9 @@ class WorkerProc:
 
         # Load model
         self.worker.load_model()
+
+        self.afd_config = vllm_config.afd_config
+        self.afd_role = self.afd_config.afd_role if self.afd_config else None
 
     @staticmethod
     def make_worker_process(
