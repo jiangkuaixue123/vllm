@@ -990,7 +990,7 @@ class DeepseekV2Model(nn.Module):
             if recv_handle is not None:
                 for work in recv_handle:
                     work.wait()
-
+            afd_connector.wait_recv_stream()
             current_hidden, residual, topk_weights, topk_ids, row_idx,router_logits= \
                 layer.compute_attn_output(positions, hidden_states, residual)
             if self.connector_name == "m2nconnector":
@@ -1097,15 +1097,19 @@ class DeepseekV2Model(nn.Module):
                 if isinstance(current_attn_metadata, list):
                     ubatch_attn_metadata = current_attn_metadata[ubatch_idx]
                     forward_ctx.attn_metadata = ubatch_attn_metadata
-
+                print(f"jcz begin deepseekv2 forward_m2n_ubatch layer_idx:{layer_idx} ubatch_idx:{ubatch_idx}", flush=True)
                 if layer_idx > self.first_k_dense_replace:
                     if self.connector_name == "m2nconnector":
-                        torchair.ops.npu_print("before recv_ffn_output,ubatch_hidden_states[ubatch_idx]=", ubatch_hidden_states[ubatch_idx],"layer.layer_idx is " ,layer.layer_idx,"ubatch_idx is ",ubatch_idx, summarize_size=2)
+                        print(f"jcz before recv_ffn_output,layer_idx:{layer_idx} ubatch_idx:{ubatch_idx}", flush=True)
                         recv_hidden_states = afd_connector.recv_ffn_output(ubatch_hidden_states[ubatch_idx],
                                                                            ubatch_metadata[ubatch_idx])
+                        print(f"jcz after recv_ffn_output,layer_idx:{layer_idx} ubatch_idx:{ubatch_idx}", flush=True)
                     elif self.connector_name == "camconnector":
+                        print(f"jcz before recv_ffn_output,layer_idx:{layer_idx} ubatch_idx:{ubatch_idx}", flush=True)
                         recv_hidden_states = afd_connector.recv_ffn_output(ubatch_hidden_states[ubatch_idx],
                                                                            ubatch_metadata[ubatch_idx])
+                        print(f"jcz after recv_ffn_output,layer_idx:{layer_idx} ubatch_idx:{ubatch_idx}", flush=True)
+                        
                     else:
                         recv_hidden_states, _ = afd_connector.recv_ffn_output()
                     ubatch_hidden_states[ubatch_idx].copy_(recv_hidden_states)
@@ -1124,7 +1128,7 @@ class DeepseekV2Model(nn.Module):
                         f"ttg deepseekv2 layer_idx:{layer.layer_idx} start_loc:{afd_metadata.afd_tokens_start_loc} "
                         f"start_idx:{start_idx} end_idx:{end_idx} "
                         f"stage_idx:{afd_metadata.afd_stage_idx}")
-                torchair.ops.npu_print("before compute_attn_output,current_hidden= ", current_hidden,"layer.layer_idx is " ,layer.layer_idx,"ubatch_idx is ",ubatch_idx,summarize_size=2)
+                afd_connector.wait_recv_stream()
                 current_hidden, current_residual, topk_weights, topk_ids, row_idx, router_logits = \
                     layer.compute_attn_output(current_positions, current_hidden, current_residual)
                 if self.connector_name == "m2nconnector":
@@ -1165,11 +1169,16 @@ class DeepseekV2Model(nn.Module):
 
                 if self.connector_name == "m2nconnector":
                     #logger.info(f"ttg deepseekv2 layer_idx:{layer.layer_idx} start send_attn_output")
-                    torchair.ops.npu_print("before send_attn_output,current_hidden= ", current_hidden,"layer.layer_idx is " ,layer.layer_idx,"ubatch_idx is ",ubatch_idx,summarize_size=2)
+                    print(f"jcz before send_attn_output,layer_idx:{layer_idx} ubatch_idx:{ubatch_idx}", flush=True)
                     handle = afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
                     ubatch_metadata[ubatch_idx].m2n_afdconnector_data.handle = handle
+                    print(f"jcz after send_attn_output,layer_idx:{layer_idx} ubatch_idx:{ubatch_idx}", flush=True)
                 elif self.connector_name == "camconnector":
-                    afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
+                    output_list = afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
+                    hidden_states1, dynamic_scales, expandIdx, expertTokenNums, epRecvCounts, simulateExpertIds, simulateExpertScales, attenBatchSize = output_list[0:8]
+                    handle = [simulateExpertIds, simulateExpertScales, expandIdx, epRecvCounts, attenBatchSize]
+                    ubatch_metadata[ubatch_idx].cam_afdconnector_data.handle = handle
+                    print(f"jcz after send_attn_output,layer_idx:{layer_idx} ubatch_idx:{ubatch_idx}", flush=True)
                 else:
                     afd_connector.send_attn_output(hidden_states=current_hidden,
                                                    router_logits=router_logits,
@@ -1178,11 +1187,11 @@ class DeepseekV2Model(nn.Module):
                                                    row_idx=row_idx,
                                                    metadata=metadata)
                 ubatch_residual[ubatch_idx] = current_residual
+                print(f"jcz finish deepseekv2 forward_m2n_ubatch layer_idx:{layer_idx} ubatch_idx:{ubatch_idx}", flush=True)
             #logger.info(f"ttg deepseekv2 layer_idx:{layer.layer_idx} finish")
 
         for ubatch_idx in range(num_ubatches):
             if self.connector_name == "m2nconnector":
-                torchair.ops.npu_print("last before recv_ffn_output,ubatch_hidden_states[ubatch_idx]= ", ubatch_hidden_states[ubatch_idx],"layer.layer_idx is " ,layer.layer_idx,"ubatch_idx is ",ubatch_idx,summarize_size=2)
                 recv_hidden_states = afd_connector.recv_ffn_output(ubatch_hidden_states[ubatch_idx],
                                                                    ubatch_metadata[ubatch_idx])
             elif self.connector_name == "camconnector":
