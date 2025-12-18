@@ -1614,6 +1614,12 @@ class DeepseekV2ForCausalLM(
         )
         return hidden_states
 
+    def compute_ffn_output(
+        self, hidden_states, current_layer_idx
+    ) -> torch.Tensor | IntermediateTensors:
+        hidden_states = self.model.compute_ffn_output(hidden_states, current_layer_idx)
+        return hidden_states
+
     def compute_logits(
         self,
         hidden_states: torch.Tensor,
