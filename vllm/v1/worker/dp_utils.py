@@ -12,7 +12,7 @@ from vllm.v1.worker.ubatch_utils import (
     UBatchSlices,
     check_ubatch_thresholds,
     create_ubatch_slices,
-    is_second_ubatch_empty,
+    is_last_ubatch_empty
 )
 
 logger = init_logger(__name__)
@@ -53,7 +53,7 @@ def _run_ar(
     return tensor
 
 
-def _post_process_ubatch(tensor: torch.Tensor) -> bool:
+def _post_process_ubatch(tensor: torch.Tensor, num_ubatches: int) -> bool:
     orig_num_tokens_tensor = tensor[0, :]
     padded_num_tokens_tensor = tensor[1, :]
 
@@ -65,7 +65,7 @@ def _post_process_ubatch(tensor: torch.Tensor) -> bool:
     # there are no "empty" second ubatches
     orig_min_num_tokens = int(orig_num_tokens_tensor.min().item())
     padded_max_num_tokens = int(padded_num_tokens_tensor.max().item())
-    if is_second_ubatch_empty(orig_min_num_tokens, padded_max_num_tokens):
+    if is_last_ubatch_empty(orig_min_num_tokens, padded_max_num_tokens, num_ubatches):
         logger.debug(
             "Aborting ubatching %s %s", orig_min_num_tokens, padded_max_num_tokens
         )
@@ -130,7 +130,7 @@ def _synchronize_dp_ranks(
     assert should_attempt_dp_padding == should_dp_pad
 
     # Check conditions for microbatching
-    should_ubatch = _post_process_ubatch(tensor)
+    should_ubatch = _post_process_ubatch(tensor, parallel_config.num_ubatches)
 
     if should_ubatch and not should_dp_pad:
         logger.debug_once(
@@ -222,11 +222,11 @@ def coordinate_batch_across_dp(
     # to the second ubatch in pad_out_ubatch_slice after attention
     # metadata creation
     assert num_tokens_after_padding is not None
-    token_split_point = int(num_tokens_after_padding[0].item()) // 2
+    token_split_point = int(num_tokens_after_padding[0].item()) // parallel_config.num_ubatches
 
     assert num_scheduled_tokens_per_request is not None
     ubatch_slices = create_ubatch_slices(
-        num_scheduled_tokens_per_request, token_split_point
+        num_scheduled_tokens_per_request, token_split_point, parallel_config.num_ubatches
     )
 
     return (ubatch_slices, num_tokens_after_padding)

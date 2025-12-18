@@ -14,7 +14,7 @@ import vllm.envs as envs
 from vllm.config import CUDAGraphMode, ParallelConfig, VllmConfig
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
-from vllm.v1.worker.ubatch_utils import UBatchSlices, is_second_ubatch_empty
+from vllm.v1.worker.ubatch_utils import UBatchSlices, is_last_ubatch_empty
 
 if TYPE_CHECKING:
     from vllm.attention.backends.abstract import AttentionMetadata
@@ -129,7 +129,7 @@ class DPMetadata:
     def should_ubatch_across_dp(
             should_ubatch: bool, orig_num_tokens_per_ubatch: int,
             padded_num_tokens_per_ubatch: int, dp_size: int,
-            dp_rank: int) -> tuple[bool, Optional[torch.Tensor]]:
+            dp_rank: int, num_ubatches: int) -> tuple[bool, Optional[torch.Tensor]]:
         """
         1. Decides if each DP rank is going to microbatch. Either all ranks
         run with microbatching or none of them do. If this function decides
@@ -166,7 +166,7 @@ class DPMetadata:
 
         orig_min_num_tokens = int(orig_num_tokens_tensor.min().item())
         padded_max_num_tokens = int(padded_num_tokens_tensor.max().item())
-        if is_second_ubatch_empty(orig_min_num_tokens, padded_max_num_tokens):
+        if is_last_ubatch_empty(orig_min_num_tokens, padded_max_num_tokens, num_ubatches):
             logger.debug("Aborting ubatching %s %s", orig_min_num_tokens,
                          padded_max_num_tokens)
             return False, None
@@ -302,6 +302,7 @@ class AFDMetadata:
     afd_stage_idx: int
     afd_connector: "AFDConnectorBase"
     afd_tokens_lens: list[int]  # padded lengths for tensor slicing
+    num_of_stages: int
 
 
 @dataclass
