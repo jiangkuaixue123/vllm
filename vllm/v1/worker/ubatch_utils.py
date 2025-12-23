@@ -26,15 +26,16 @@ class UBatchSlice:
 
 UBatchSlices: TypeAlias = list[UBatchSlice]
 
-
-def is_second_ubatch_empty(orig_num_tokens: int, padded_num_tokens: int) -> bool:
-    return (padded_num_tokens // 2) >= orig_num_tokens
+def is_last_ubatch_empty(
+    orig_num_tokens: int, padded_num_tokens: int, num_ubatches: int
+) -> bool:
+    return (padded_num_tokens // num_ubatches) * (num_ubatches - 1) >= orig_num_tokens
 
 
 def check_ubatch_thresholds(
     config: ParallelConfig, num_tokens: int, uniform_decode: bool
 ) -> bool:
-    if not config.enable_dbo:
+    if not config.use_ubatching:
         return False
     if uniform_decode:
         return num_tokens >= config.dbo_decode_token_threshold
@@ -43,32 +44,35 @@ def check_ubatch_thresholds(
 
 
 def create_ubatch_slices(
-    num_scheduled_tokens: np.ndarray, split_point: int
+    num_scheduled_tokens: np.ndarray, split_point: int, num_ubatches: int
 ) -> UBatchSlices:
     # TODO(lucas): Refactor the gpu_model_runner.py so we can pass
     # in cu_num_tokens directly (i.e. query_start_loc)
     cu_num_tokens = np.zeros(len(num_scheduled_tokens) + 1, dtype=np.int32)
     np.cumsum(num_scheduled_tokens, dtype=np.int32, out=cu_num_tokens[1:])
 
-    first_ubatch_token_slice = slice(0, split_point)
-    second_ubatch_token_slice = slice(split_point, cu_num_tokens[-1])
+    token_split_points = [split_point * i for i in range(1, num_ubatches)]
+    ubatch_slices = []
+    start_token = 0
 
-    # Determine request slices using exclusive stop semantics
-    # First ubatch includes requests whose tokens overlap [0, split_point)
-    first_ubatch_req_stop = int(
-        np.searchsorted(cu_num_tokens, split_point, side="left")
-    )
-    first_ubatch_req_slice = slice(0, first_ubatch_req_stop)
+    # Add the end point to the split points to make iteration easier
+    all_points = token_split_points + [cu_num_tokens[-1]]
 
-    # Second ubatch starts at the request that contains the split_point
-    # or the request starting exactly at split_point (if on boundary)
-    second_ubatch_req_start = int(
-        np.searchsorted(cu_num_tokens, split_point, side="right") - 1
-    )
-    second_ubatch_req_slice = slice(second_ubatch_req_start, len(cu_num_tokens) - 1)
+    for end_token in all_points:
+        token_slice = slice(start_token, end_token)
+        # Determine request slices using exclusive stop semantics
+        # Ubatch includes requests whose tokens overlap [start_token, end_token)
 
-    return [
-        UBatchSlice(first_ubatch_req_slice, first_ubatch_token_slice),
-        UBatchSlice(second_ubatch_req_slice, second_ubatch_token_slice),
-    ]
+        # Start at the request that contains the start_token
+        # or the request starting exactly at start_token (if on boundary)
+        req_start = int(np.searchsorted(cu_num_tokens, start_token, side="right") - 1)
 
+        # Stop at the request that starts at or after end_token
+        req_stop = int(np.searchsorted(cu_num_tokens, end_token, side="left"))
+
+        req_slice = slice(req_start, req_stop)
+        ubatch_slices.append(UBatchSlice(req_slice, token_slice))
+
+        start_token = end_token
+
+    return ubatch_slices

@@ -11,7 +11,7 @@ from vllm.forward_context import DPMetadata
 from vllm.logger import init_logger
 from vllm.utils import round_up
 from vllm.v1.worker.ubatch_utils import (UBatchSlice, UBatchSlices,
-                                         is_second_ubatch_empty)
+                                         is_last_ubatch_empty)
 
 logger = init_logger(__name__)
 
@@ -21,13 +21,14 @@ def should_ubatch_with_num_tokens(
     orig_num_tokens_per_ubatch: int,
     padded_num_tokens_per_ubatch: int,
     vllm_config: VllmConfig,
+    num_ubatches: int
 ) -> tuple[bool, Optional[torch.Tensor]]:
     dp_size = vllm_config.parallel_config.data_parallel_size
     dp_rank = vllm_config.parallel_config.data_parallel_rank
     return DPMetadata.should_ubatch_across_dp(should_ubatch,
                                               orig_num_tokens_per_ubatch,
                                               padded_num_tokens_per_ubatch,
-                                              dp_size, dp_rank)
+                                              dp_size, dp_rank, num_ubatches)
 
 
 def check_ubatch_thresholds(config: ParallelConfig, num_tokens: int,
@@ -62,6 +63,7 @@ def get_dp_padding_ubatch(
     ]
 
     """
+    logger.info("jcz get_dp_padding_ubatch")
     assert num_tokens_padded >= num_tokens_unpadded
     dp_size = vllm_config.parallel_config.data_parallel_size
     if dp_size == 1:
@@ -69,21 +71,22 @@ def get_dp_padding_ubatch(
         return False, None
 
     # If this DP rank doesn't want to attempt microbatching
+    num_ubatches = vllm_config.parallel_config.num_ubatches
     if not should_attempt_ubatching:
         (should_ubatch, num_tokens_across_dp) = should_ubatch_with_num_tokens(
-            False, 0, 0, vllm_config)
+            False, 0, 0, vllm_config, num_ubatches)
         assert should_ubatch is False
         assert num_tokens_across_dp is None
         return should_ubatch, num_tokens_across_dp
 
     # Round up to the next multiple of two for even divisibility
     num_tokens_padded = round_up(num_tokens_padded, 2)
-    num_tokens_per_ubatch = num_tokens_padded // 2
+    num_tokens_per_ubatch = num_tokens_padded // num_ubatches
     should_ubatch = True
 
     # Sanity Check that the existing padding isn't giving us an empty second
     # ubatch. Abort if so
-    if is_second_ubatch_empty(num_tokens_unpadded, num_tokens_padded):
+    if is_last_ubatch_empty(num_tokens_unpadded, num_tokens_padded, num_ubatches):
         logger.debug(
             "Empty second µbatch detected: unpadded tokens: %s, padded "
             "tokens: %s", num_tokens_unpadded, num_tokens_padded)
@@ -106,33 +109,39 @@ def get_dp_padding_ubatch(
                                             dtype=torch.int32)
     return should_ubatch, num_tokens_after_padding
 
-def create_ubatch_slices(num_scheduled_tokens: np.ndarray, split_point: int) \
-    -> UBatchSlices:
+def create_ubatch_slices(
+    num_scheduled_tokens: np.ndarray, split_point: int, num_ubatches: int
+) -> UBatchSlices:
     # TODO(lucas): Refactor the gpu_model_runner.py so we can pass
     # in cu_num_tokens directly (i.e. query_start_loc)
     cu_num_tokens = np.zeros(len(num_scheduled_tokens) + 1, dtype=np.int32)
     np.cumsum(num_scheduled_tokens, dtype=np.int32, out=cu_num_tokens[1:])
 
-    first_ubatch_token_slice = slice(0, split_point)
-    second_ubatch_token_slice = slice(split_point, cu_num_tokens[-1])
+    token_split_points = [split_point * i for i in range(1, num_ubatches)]
+    ubatch_slices = []
+    start_token = 0
 
-    # Determine request slices using exclusive stop semantics
-    # First ubatch includes requests whose tokens overlap [0, split_point)
-    first_ubatch_req_stop = int(
-        np.searchsorted(cu_num_tokens, split_point, side="left"))
-    first_ubatch_req_slice = slice(0, first_ubatch_req_stop)
+    # Add the end point to the split points to make iteration easier
+    all_points = token_split_points + [cu_num_tokens[-1]]
 
-    # Second ubatch starts at the request that contains the split_point
-    # or the request starting exactly at split_point (if on boundary)
-    second_ubatch_req_start = int(
-        np.searchsorted(cu_num_tokens, split_point, side="right") - 1)
-    second_ubatch_req_slice = slice(second_ubatch_req_start,
-                                    len(cu_num_tokens) - 1)
+    for end_token in all_points:
+        token_slice = slice(start_token, end_token)
+        # Determine request slices using exclusive stop semantics
+        # Ubatch includes requests whose tokens overlap [start_token, end_token)
 
-    return [
-        UBatchSlice(first_ubatch_req_slice, first_ubatch_token_slice),
-        UBatchSlice(second_ubatch_req_slice, second_ubatch_token_slice)
-    ]
+        # Start at the request that contains the start_token
+        # or the request starting exactly at start_token (if on boundary)
+        req_start = int(np.searchsorted(cu_num_tokens, start_token, side="right") - 1)
+
+        # Stop at the request that starts at or after end_token
+        req_stop = int(np.searchsorted(cu_num_tokens, end_token, side="left"))
+
+        req_slice = slice(req_start, req_stop)
+        ubatch_slices.append(UBatchSlice(req_slice, token_slice))
+
+        start_token = end_token
+
+    return ubatch_slices
 
 
 def ubatch_split(
@@ -187,6 +196,6 @@ def ubatch_split(
     token_split_point = int(num_tokens_after_padding[0].item())
 
     ubatch_slices = create_ubatch_slices(num_scheduled_tokens_per_request,
-                                         token_split_point)
+                                         token_split_point, parallel_config.num_ubatches)
 
     return (ubatch_slices, num_tokens_after_padding)
