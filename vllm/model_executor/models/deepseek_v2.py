@@ -996,14 +996,14 @@ class DeepseekV2Model(nn.Module):
             if self.connector_name == "m2nconnector":
                 from vllm_ascend.distributed.M2NAFDConnector import M2NAFDConnectorMetadata
                 m2n_afdconnector_data = M2NAFDConnectorMetadata()
-                m2n_afdconnector_data.moe_expert_num = 64
+                m2n_afdconnector_data.moe_expert_num = self.config.n_routed_experts
                 m2n_afdconnector_data.quant_mode = 0
                 m2n_afdconnector_data.aiv_num = 48
                 m2n_afdconnector_data.scale = None
             if self.connector_name == "camconnector":
                 from vllm_ascend.distributed.CAMAFDConnector import CAMAFDConnectorMetadata
                 cam_afdconnector_data = CAMAFDConnectorMetadata(
-                    moe_expert_num = 64,
+                    moe_expert_num = self.config.n_routed_experts,
                     shared_expert_num = 0,
                     scale = None,
                     handle = None,
