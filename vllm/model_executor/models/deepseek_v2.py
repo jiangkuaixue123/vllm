@@ -1046,8 +1046,9 @@ class DeepseekV2Model(nn.Module):
                 
             
 
-            if dbo_enabled():
-                dbo_yield()
+            # if dbo_enabled():
+            #     dbo_yield()
+            hidden_states = apply_dbo_yield(hidden_states)
         return hidden_states, residual
 
     def forward(
@@ -1076,7 +1077,11 @@ class DeepseekV2Model(nn.Module):
             hidden_states, residual = self.forward_m2n(hidden_states, residual, positions, afd_metadata)
         else:
             for layer in islice(self.layers, self.start_layer, self.end_layer):
+                # if self.enforce_eager:
+                #     ubatch_idx = forward_ctx.ubatch_idx
+                #     logger.info(f"jcz deepseek forward_m2n layer_idx:{layer.layer_idx} ubatch_idx:{ubatch_idx}")
                 hidden_states, residual = layer(positions, hidden_states, residual)
+                hidden_states = apply_dbo_yield(hidden_states)
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
@@ -1424,3 +1429,29 @@ def get_spec_layer_idx_from_weight_name(config: Union[DeepseekV2Config,
             if weight_name.startswith(f"model.layers.{layer_idx+i}."):
                 return layer_idx + i
     return None
+
+from vllm.utils import direct_register_custom_op
+
+# 1. 定义算子实现：接收 Tensor，执行副作用，返回 Tensor
+def manual_dbo_yield_op(x: torch.Tensor) -> torch.Tensor:
+    if dbo_enabled():
+        dbo_yield()
+    return x
+
+# 2. 定义 Fake 实现：用于 Meta Tensor 推断 (torch.compile 需要)
+# Fake 实现只做形状推断，不执行实际逻辑
+def manual_dbo_yield_fake(x: torch.Tensor) -> torch.Tensor:
+    return x
+
+# 3. 注册算子
+# 注意：op_name 只需要名字，不需要 "vllm::" 前缀，工具会自动处理
+direct_register_custom_op(
+    op_name="manual_dbo_yield",
+    op_func=manual_dbo_yield_op,
+    fake_impl=manual_dbo_yield_fake,
+    mutates_args=[] # 该算子不修改输入 Tensor 的数值
+)
+
+# 封装调用辅助函数
+def apply_dbo_yield(x: torch.Tensor) -> torch.Tensor:
+    return torch.ops.vllm.manual_dbo_yield(x)
