@@ -83,15 +83,9 @@ class SharedStorageConnector(KVConnectorBase_V1):
         super().__init__(vllm_config=vllm_config, role=role)
         self._block_size = vllm_config.cache_config.block_size
         self._requests_need_load: dict[str, Request] = {}
-        self.transfer_config = vllm_config.kv_transfer_config
+        transfer_config = vllm_config.kv_transfer_config
         self.afd_config = vllm_config.afd_config
-        if (self.transfer_config.is_kv_consumer
-                and self.afd_config is not None
-                and self.afd_config.afd_role is not None):
-            self.is_kv_consumer_with_afd = True
-        else:
-            self.is_kv_consumer_with_afd = False
-        self._storage_path = self.transfer_config.get_from_extra_config(
+        self._storage_path = transfer_config.get_from_extra_config(
             "shared_storage_path", "/tmp")
         logger.info(vllm_config.kv_transfer_config)
         logger.info("Shared storage path is %s", self._storage_path)
@@ -109,7 +103,10 @@ class SharedStorageConnector(KVConnectorBase_V1):
             The number of elements in kv_caches and layer_names should be 
             the same.
         """
-        if self.is_kv_consumer_with_afd:
+        if (self.afd_config is not None
+                and self.afd_config.afd_extra_config is not None
+                and self.afd_config.afd_extra_config.get("decode_only") is not None
+                and self.afd_config.afd_extra_config.get("decode_only")) :
             return
         attn_metadata = forward_context.attn_metadata
 
@@ -269,7 +266,10 @@ class SharedStorageConnector(KVConnectorBase_V1):
         # NOTE: in current v1 scheduler, the num_computed_tokens is aligned
         # with the block granularity. And it expects the returned blocks and
         # num_computed_tokens to also be aligned with the block granularity.
-        if self.is_kv_consumer_with_afd:
+        if (self.afd_config is not None
+                and self.afd_config.afd_extra_config is not None
+                and self.afd_config.afd_extra_config.get("decode_only") is not None
+                and self.afd_config.afd_extra_config.get("decode_only")):
             return len(request.porompt_token_ids) - 1, False
         if not self._found_match_for_request(request):
             return 0, False
