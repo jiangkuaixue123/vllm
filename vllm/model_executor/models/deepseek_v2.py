@@ -949,6 +949,9 @@ class DeepseekV2Model(nn.Module):
             with_stack=False
         )
 
+        self.comm_stream = torch.npu.Stream()
+        torch.npu.set_stream_limit(self.comm_stream, 8, 16)
+
         self.afd_connector_name = vllm_config.afd_config.afd_connector if vllm_config.afd_config is not None else None
 
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
@@ -1024,26 +1027,29 @@ class DeepseekV2Model(nn.Module):
                 m2n_afdconnector_data=m2n_afdconnector_data if self.connector_name == "m2nconnector" else None,
                 cam_afdconnector_data=cam_afdconnector_data if self.connector_name == "camconnector" else None,
             )
+            curr_stream = torch.npu.current_stream()
+            self.comm_stream.wait_stream(curr_stream)
+            with torch.npu.stream(self.comm_stream):
+                if self.connector_name == "m2nconnector":
+                    handle = afd_connector.send_attn_output(current_hidden,topk_weights,topk_ids,metadata)
+                    metadata.m2n_afdconnector_data.handle = handle
+                    hidden_states = afd_connector.recv_ffn_output(hidden_states,metadata)
+                elif self.connector_name == "camconnector":
+                    output_list = afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
+                    hidden_states1, dynamic_scales, expandIdx, expertTokenNums, epRecvCounts, simulateExpertIds, simulateExpertScales, attenBatchSize = output_list[0:8]
+                    handle = [simulateExpertIds, simulateExpertScales, expandIdx, epRecvCounts, attenBatchSize]
+                    metadata.cam_afdconnector_data.handle = handle
+                    hidden_states = afd_connector.recv_ffn_output(hidden_states, metadata)
+                else:
+                    afd_connector.send_attn_output(hidden_states = current_hidden,
+                                                router_logits = router_logits,
+                                                topk_weights = topk_weights, 
+                                                topk_ids = topk_ids, 
+                                                row_idx = row_idx, 
+                                                metadata = metadata)
+                    hidden_states, _ = afd_connector.recv_ffn_output()
             
-            if self.connector_name == "m2nconnector":
-                handle = afd_connector.send_attn_output(current_hidden,topk_weights,topk_ids,metadata)
-                metadata.m2n_afdconnector_data.handle = handle
-                hidden_states = afd_connector.recv_ffn_output(hidden_states,metadata)
-            elif self.connector_name == "camconnector":
-                output_list = afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
-                hidden_states1, dynamic_scales, expandIdx, expertTokenNums, epRecvCounts, simulateExpertIds, simulateExpertScales, attenBatchSize = output_list[0:8]
-                handle = [simulateExpertIds, simulateExpertScales, expandIdx, epRecvCounts, attenBatchSize]
-                metadata.cam_afdconnector_data.handle = handle
-                hidden_states = afd_connector.recv_ffn_output(hidden_states, metadata)
-            else:
-                afd_connector.send_attn_output(hidden_states = current_hidden,
-                                               router_logits = router_logits,
-                                               topk_weights = topk_weights, 
-                                               topk_ids = topk_ids, 
-                                               row_idx = row_idx, 
-                                               metadata = metadata)
-                hidden_states, _ = afd_connector.recv_ffn_output()
-                
+            curr_stream.wait_stream(self.comm_stream)
             
 
             if dbo_enabled():
