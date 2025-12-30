@@ -14,7 +14,7 @@ from vllm.distributed import get_ep_group
 from vllm.distributed.device_communicators.pynccl_allocator import (
     set_graph_pool_id)
 from vllm.forward_context import (create_forward_context, get_forward_context,
-                                  override_forward_context)
+                                  override_forward_context, DPMetadata)
 from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.sequence import IntermediateTensors
@@ -280,14 +280,25 @@ class UBatchWrapper:
         # Create one forward context per ubatch
         forward_contexts = []
         for i, ubatch_slice in enumerate(ubatch_slices):
+            dp_size = self.vllm_config.parallel_config.data_parallel_size
+            ubatch_num_tokens_across_dp = torch.tensor(
+                [ubatch_slice.num_tokens] * dp_size, device="cpu", dtype=torch.int32
+            )
+            ubatch_dp_metadata = DPMetadata.make(
+                self.vllm_config.parallel_config,
+                ubatch_slice.num_tokens,
+                ubatch_num_tokens_across_dp,
+            )
             forward_contexts.append(
                 create_forward_context(
                     attn_metadata[i] if attn_metadata is not None else None,
                     self.vllm_config,
-                    dp_metadata=dp_metadata,
+                    dp_metadata=ubatch_dp_metadata,
+                    # dp_metadata=dp_metadata,
                     batch_descriptor=batch_descriptor,
                     cudagraph_runtime_mode=cudagraph_runtime_mode,
-                    afd_metadata=afd_metadata
+                    afd_metadata=afd_metadata,
+                    ubatch_idx=i
                 )
             )
 
