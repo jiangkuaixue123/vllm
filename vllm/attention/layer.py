@@ -624,7 +624,7 @@ def unified_attention(
     forward_context: ForwardContext = get_forward_context()
     attn_metadata = forward_context.attn_metadata
     if afd_metadata is not None and isinstance(attn_metadata, list):
-        afd_stage_idx = afd_metadata.afd_stage_idx
+        afd_stage_idx = forward_context.ubatch_idx
         if afd_stage_idx < len(attn_metadata):
             attn_metadata = attn_metadata[afd_stage_idx]
         else:
