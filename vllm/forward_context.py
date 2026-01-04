@@ -332,6 +332,7 @@ class ForwardContext:
     ubatch_slices: Optional[UBatchSlices] = None
     ubatch_idx: int = 0
     num_ubatches: int = 1
+    cam_afdconnector_data: Optional[Any] = None
 
     def __post_init__(self):
         assert self.cudagraph_runtime_mode in [

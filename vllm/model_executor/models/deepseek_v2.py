@@ -1072,6 +1072,7 @@ class DeepseekV2Model(nn.Module):
                 dtype=hidden_states.dtype,
                 device=hidden_states.device,
                 num_ubatches=forward_ctx.num_ubatches,
+                num_ubatches=forward_ctx.num_ubatches,
                 ffn_need_forward_data=ffn_need_forward_data,
                 m2n_afdconnector_data=m2n_afdconnector_data if self.connector_name == "m2nconnector" else None,
                 cam_m2n_afdconnector_data=cam_afdconnector_data if self.connector_name == "camm2nconnector" else None,
@@ -1083,11 +1084,7 @@ class DeepseekV2Model(nn.Module):
                 metadata.m2n_afdconnector_data.handle = handle
                 hidden_states = afd_connector.recv_ffn_output(hidden_states,metadata)
             elif self.connector_name == "camm2nconnector":
-                output_list = afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata,forward_ctx.ubatch_idx)
-                hidden_states1, dynamic_scales, expandIdx, expertTokenNums, epRecvCounts, simulateExpertIds, simulateExpertScales, attenBatchSize = output_list[0:8]
-                handle = [simulateExpertIds, simulateExpertScales, expandIdx, epRecvCounts, attenBatchSize]
-                metadata.cam_m2n_afdconnector_data.handle = handle
-                hidden_states = afd_connector.recv_ffn_output(hidden_states, metadata)
+                hidden_states = afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
             elif self.connector_name == "camp2pconnector":
                 output_list = afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
                 hidden_states1, simulateExpertIds, simulateExpertScales, attenBatchSize, xActiveMaskOut = output_list[0:5]
