@@ -1071,6 +1071,7 @@ class DeepseekV2Model(nn.Module):
                 seq_len=hidden_states.shape[0],
                 dtype=hidden_states.dtype,
                 device=hidden_states.device,
+                num_ubatches=forward_ctx.num_ubatches,
                 ffn_need_forward_data=ffn_need_forward_data,
                 m2n_afdconnector_data=m2n_afdconnector_data if self.connector_name == "m2nconnector" else None,
                 cam_m2n_afdconnector_data=cam_afdconnector_data if self.connector_name == "camm2nconnector" else None,
