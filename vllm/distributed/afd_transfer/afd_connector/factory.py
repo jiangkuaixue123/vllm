@@ -99,5 +99,9 @@ AFDConnectorFactory.register_connector(
     "M2NAFDConnector")
 
 AFDConnectorFactory.register_connector(
-    "camconnector", "vllm_ascend.distributed.CAMAFDConnector",
-    "CAMAFDConnector")
+    "camm2nconnector", "vllm_ascend.distributed.CAMM2NAFDConnector",
+    "CAMM2NAFDConnector")
+
+AFDConnectorFactory.register_connector(
+    "camp2pconnector", "vllm_ascend.distributed.CAMP2PAFDConnector",
+    "CAMP2PAFDConnector")

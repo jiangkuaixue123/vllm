@@ -72,7 +72,22 @@ class M2NAFDConnectorMetadata:
         self.expand_x_type = torch.float16
         
 @dataclass
-class CAMAFDConnectorMetadata:
+class CAMM2NAFDConnectorMetadata:
+    def __init__(self, moe_expert_num=0,
+        shared_expert_num = 0, scale=None, handle=None, quant_mode=0,
+        aiv_num=0, batch_size=0, h=0, k=0):
+        self.moe_expert_num = moe_expert_num
+        self.shared_expert_num = shared_expert_num
+        self.scale = scale
+        self.handle = handle
+        self.quant_mode = quant_mode
+        self.aiv_num = aiv_num
+        self.batch_size = batch_size
+        self.h = h
+        self.k = k
+
+@dataclass
+class CAMP2PAFDConnectorMetadata:
     def __init__(self, moe_expert_num=0,
         shared_expert_num = 0, scale=None, handle=None, quant_mode=0,
         aiv_num=0, batch_size=0, h=0, k=0):
@@ -117,7 +132,8 @@ class AFDConnectorMetadata:
     # TODO(jcz): need fix vllm_ascend dependency
     ffn_need_forward_data: Optional[FFNNeedForwardData] = None
     m2n_afdconnector_data: Optional[M2NAFDConnectorMetadata] = None
-    cam_afdconnector_data: Optional[CAMAFDConnectorMetadata] = None
+    cam_m2n_afdconnector_data: Optional[CAMM2NAFDConnectorMetadata] = None
+    cam_p2p_afdconnector_data: Optional[CAMP2PAFDConnectorMetadata] = None
     topk_weights: Optional[torch.Tensor] = None
     topk_ids: Optional[torch.Tensor] = None
     row_idx: Optional[torch.Tensor] = None
@@ -164,7 +180,8 @@ class AFDConnectorMetadata:
             request_id: Optional[str] = None,
             ffn_need_forward_data:Optional[FFNNeedForwardData] = None,
             m2n_afdconnector_data:Optional[M2NAFDConnectorMetadata] = None,
-            cam_afdconnector_data:Optional[CAMAFDConnectorMetadata] = None,
+            cam_m2n_afdconnector_data:Optional[CAMM2NAFDConnectorMetadata] = None,
+            cam_p2p_afdconnector_data:Optional[CAMP2PAFDConnectorMetadata] = None,
             # extra_fields: AFDExtraFields = field(default_factory=AFDExtraFields),
             topk_weights: Optional[torch.Tensor] = None,
             topk_ids: Optional[torch.Tensor] = None,
@@ -179,7 +196,8 @@ class AFDConnectorMetadata:
                 #    timestamp=time.time(),
                    ffn_need_forward_data=ffn_need_forward_data,
                    m2n_afdconnector_data=m2n_afdconnector_data,
-                   cam_afdconnector_data=cam_afdconnector_data,
+                   cam_m2n_afdconnector_data=cam_m2n_afdconnector_data,
+                   cam_p2p_afdconnector_data=cam_p2p_afdconnector_data,
                    topk_weights=topk_weights,
                    topk_ids=topk_ids,
                    row_idx=row_idx,

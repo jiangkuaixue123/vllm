@@ -297,6 +297,8 @@ class DeepseekV2MoE(nn.Module):
         topk_weights: Optional[torch.Tensor] = None,
         topk_ids: Optional[torch.Tensor] = None,
         row_idx: Optional[torch.Tensor] = None,
+        x_active_mask: Optional[torch.Tensor] = None,
+        cam_p2p_ep_name: Optional[str] = "",
         ) -> torch.Tensor:
         num_tokens, hidden_dim = hidden_states.shape
         # TODO(yxj ):dynamic_scales --> dynamic_scale
@@ -305,13 +307,23 @@ class DeepseekV2MoE(nn.Module):
         set_substitute_tp(1)
         self.tp_size = get_tensor_model_parallel_world_size()
         self.tp_rank = get_tensor_model_parallel_rank()
-        if self.connector_name == "m2nconnector" or self.connector_name == "camconnector":
+        if self.connector_name == "m2nconnector" or self.connector_name == "camm2nconnector":
             fused_moe_out = self.experts.afd_m2n_ffn_compute(
                 layer=self.experts,  
                 hidden_states=hidden_states,  
                 group_list=group_list, 
                 dynamic_scale=dynamic_scales,
                 connector_name=self.connector_name
+                )
+        elif self.connector_name == "camp2pconnector":
+            fused_moe_out = self.experts.afd_m2n_ffn_compute(
+                layer=self.experts,  
+                hidden_states=hidden_states,  
+                topk_ids=topk_ids,
+                topk_weights=topk_weights,
+                connector_name=self.connector_name,
+                x_active_mask=x_active_mask,
+                cam_p2p_ep_name=cam_p2p_ep_name
                 )
         else:
             fused_moe_out = self.experts.afd_ffn_compute(
@@ -870,7 +882,9 @@ class DeepseekV2DecoderLayer(nn.Module):
                            dynamic_scales: Optional[torch.Tensor] = None,
                            topk_weights: Optional[torch.Tensor] = None,
                            topk_ids: Optional[torch.Tensor] = None,
-                           row_idx: Optional[torch.Tensor] = None):
+                           row_idx: Optional[torch.Tensor] = None,
+                           x_active_mask: Optional[torch.Tensor] = None,
+                           cam_p2p_ep_name: Optional[str] = "",):
         assert self.role == "ffn"
         if self.afd_config is not None and self.afd_config.compute_gate_on_attention:
             hidden_states = self.mlp.afd_forward(
@@ -881,6 +895,8 @@ class DeepseekV2DecoderLayer(nn.Module):
                                     topk_ids=topk_ids,
                                     row_idx=row_idx if self.connector_name == "p2pconnector" else None,
                                     router_logits=router_logits if self.connector_name == "p2pconnector" else None,
+                                    x_active_mask=x_active_mask if self.connector_name == "camp2pconnector" else None,
+                                    cam_p2p_ep_name=cam_p2p_ep_name if self.connector_name == "camp2pconnector" else "",
                                     )
         else:
             hidden_states = self.mlp(hidden_states)
@@ -903,6 +919,11 @@ class DeepseekV2Model(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
 
+        self.scheduler_config = vllm_config.scheduler_config
+        decode_max_num_seqs = getattr(self.scheduler_config,
+                                      'decode_max_num_seqs', 0)
+        self.max_num_reqs = max(self.scheduler_config.max_num_seqs,
+                                decode_max_num_seqs)
         config = vllm_config.model_config.hf_config
         quant_config = vllm_config.quant_config
         self.config = config
@@ -1000,18 +1021,31 @@ class DeepseekV2Model(nn.Module):
                 m2n_afdconnector_data.quant_mode = 0
                 m2n_afdconnector_data.aiv_num = 48
                 m2n_afdconnector_data.scale = None
-            if self.connector_name == "camconnector":
-                from vllm_ascend.distributed.CAMAFDConnector import CAMAFDConnectorMetadata
-                cam_afdconnector_data = CAMAFDConnectorMetadata(
+            if self.connector_name == "camm2nconnector":
+                from vllm_ascend.distributed.CAMM2NAFDConnector import CAMM2NAFDConnectorMetadata
+                cam_afdconnector_data = CAMM2NAFDConnectorMetadata(
                     moe_expert_num = self.config.n_routed_experts,
                     shared_expert_num = 0,
                     scale = None,
                     handle = None,
                     quant_mode = 0,
                     aiv_num = 48,
-                    batch_size = 4,
-                    h = 2048,
-                    k = 8
+                    batch_size = self.max_num_reqs,
+                    h = self.config.hidden_size,
+                    k = self.num_experts_per_tok
+                )
+            if self.connector_name == "camp2pconnector":
+                from vllm_ascend.distributed.CAMP2PAFDConnector import CAMP2PAFDConnectorMetadata
+                cam_afdconnector_data = CAMP2PAFDConnectorMetadata(
+                    moe_expert_num = self.config.n_routed_experts,
+                    shared_expert_num = 0,
+                    scale = None,
+                    handle = None,
+                    quant_mode = 0,
+                    aiv_num = 48,
+                    batch_size = self.max_num_reqs,
+                    h = self.config.hidden_size,
+                    k = self.num_experts_per_tok
                 )
 
             metadata = AFDConnectorMetadata.create_attention_metadata(
@@ -1022,18 +1056,25 @@ class DeepseekV2Model(nn.Module):
                 device=hidden_states.device,
                 ffn_need_forward_data=ffn_need_forward_data,
                 m2n_afdconnector_data=m2n_afdconnector_data if self.connector_name == "m2nconnector" else None,
-                cam_afdconnector_data=cam_afdconnector_data if self.connector_name == "camconnector" else None,
+                cam_m2n_afdconnector_data=cam_afdconnector_data if self.connector_name == "camm2nconnector" else None,
+                cam_p2p_afdconnector_data=cam_afdconnector_data if self.connector_name == "camp2pconnector" else None,
             )
             
             if self.connector_name == "m2nconnector":
                 handle = afd_connector.send_attn_output(current_hidden,topk_weights,topk_ids,metadata)
                 metadata.m2n_afdconnector_data.handle = handle
                 hidden_states = afd_connector.recv_ffn_output(hidden_states,metadata)
-            elif self.connector_name == "camconnector":
+            elif self.connector_name == "camm2nconnector":
                 output_list = afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
                 hidden_states1, dynamic_scales, expandIdx, expertTokenNums, epRecvCounts, simulateExpertIds, simulateExpertScales, attenBatchSize = output_list[0:8]
                 handle = [simulateExpertIds, simulateExpertScales, expandIdx, epRecvCounts, attenBatchSize]
-                metadata.cam_afdconnector_data.handle = handle
+                metadata.cam_m2n_afdconnector_data.handle = handle
+                hidden_states = afd_connector.recv_ffn_output(hidden_states, metadata)
+            elif self.connector_name == "camp2pconnector":
+                output_list = afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
+                hidden_states1, simulateExpertIds, simulateExpertScales, attenBatchSize, xActiveMaskOut = output_list[0:5]
+                handle = [hidden_states1, simulateExpertIds, simulateExpertScales, attenBatchSize]
+                metadata.cam_p2p_afdconnector_data.handle = handle
                 hidden_states = afd_connector.recv_ffn_output(hidden_states, metadata)
             else:
                 afd_connector.send_attn_output(hidden_states = current_hidden,
@@ -1097,6 +1138,8 @@ class DeepseekV2Model(nn.Module):
         topk_weights: Optional[torch.Tensor] = None,
         topk_ids: Optional[torch.Tensor] = None,
         row_idx: Optional[torch.Tensor] = None,
+        x_active_mask: Optional[torch.Tensor] = None,
+        cam_p2p_ep_name: Optional[str] = "",
     ) -> Union[torch.Tensor, IntermediateTensors]:
         if self.afd_config is not None and self.afd_config.compute_gate_on_attention:
             hidden_states = self.layers[layer_idx].compute_ffn_output(hidden_states = hidden_states, 
@@ -1105,7 +1148,9 @@ class DeepseekV2Model(nn.Module):
                                             topk_weights=topk_weights,
                                             topk_ids=topk_ids,
                                             row_idx=row_idx if self.connector_name == "p2pconnector" else None,
-                                            router_logits=router_logits if self.connector_name == "p2pconnector" else None,)
+                                            router_logits=router_logits if self.connector_name == "p2pconnector" else None,
+                                            x_active_mask=x_active_mask if self.connector_name == "camp2pconnector" else None,
+                                            cam_p2p_ep_name=cam_p2p_ep_name if self.connector_name == "camp2pconnector" else "",)
         else:
             hidden_states = self.layers[layer_idx].compute_ffn_output(hidden_states)
         return hidden_states
@@ -1241,6 +1286,8 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts,
         topk_weights: Optional[torch.Tensor] = None,
         topk_ids: Optional[torch.Tensor] = None,
         row_idx: Optional[torch.Tensor] = None,
+        x_active_mask: Optional[torch.Tensor] = None,
+        cam_p2p_ep_name: Optional[str] = "",
     ) -> Union[torch.Tensor, IntermediateTensors]:
         hidden_states = self.model.compute_ffn_output(
                                     hidden_states=hidden_states,
@@ -1251,6 +1298,8 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts,
                                     dynamic_scales=dynamic_scales,
                                     row_idx=row_idx if self.connector_name == "p2pconnector" else None,
                                     router_logits=router_logits if self.connector_name == "p2pconnector" else None,
+                                    x_active_mask=x_active_mask if self.connector_name == "camp2pconnector" else None,
+                                    cam_p2p_ep_name=cam_p2p_ep_name if self.connector_name == "camp2pconnector" else "",
                                     )
         return hidden_states
 
