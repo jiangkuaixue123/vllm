@@ -12,4 +12,4 @@ python -m vllm.entrypoints.afd_ffn_server /home/l00851163/afd/DSV2LiteWeight\
         --max_num_seqs 4 \
         --enforce-eager \
         --max-model-len 4096 \
-        --afd-config '{"afd_connector":"p2pconnector", "num_afd_stages":"1", "afd_role": "ffn", "afd_extra_config":{"afd_size":"2A2F"}, "compute_gate_on_attention": "True"}'
+        --afd-config '{"afd_connector":"p2pconnector", "num_afd_stages":"1", "afd_role": "ffn", "afd_extra_config":{"afd_size":"2A2F"}, "compute_gate_on_attention": "True", "multistream_info":{"enable":"True", "core_num": 8}}'
