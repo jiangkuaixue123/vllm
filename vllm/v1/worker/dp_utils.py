@@ -75,7 +75,6 @@ def _post_process_ubatch(tensor: torch.Tensor, num_ubatches: int) -> bool:
 
 def _post_process_dp_padding(tensor: torch.Tensor, should_dp_pad: bool) -> torch.Tensor:
     num_tokens_across_dp = tensor[1, :]
-    logger.info(f"jcz _post_process_dp_padding tensor:{tensor} should_dp_pad:{should_dp_pad}")
     if should_dp_pad:
         # If DP padding is enabled, ensure that each rank is processing the same number
         # of tokens
