@@ -1019,7 +1019,7 @@ class DeepseekV2Model(nn.Module):
                                                                         ubatch_metadata[ubatch_idx],ubatch_idx)
                     # recv_hidden_states = afd_connector.recv_ffn_output(ubatch_hidden_states[ubatch_idx],
                     #                                                    ubatch_metadata[ubatch_idx],ubatch_idx)
-                elif self.connector_name == "camconnector":
+                elif self.connector_name == "camm2nconnector":
                     recv_hidden_states = afd_connector.recv_ffn_output(hidden_states,
                                                                         metadata,
                                                                         forward_ctx.ubatch_idx)
@@ -1049,7 +1049,7 @@ class DeepseekV2Model(nn.Module):
                     aiv_num = 48,
                     batch_size = self.max_num_reqs,
                     h = self.config.hidden_size,
-                    k = self.num_experts_per_tok
+                    k = self.config.num_experts_per_tok
                 )
             if self.connector_name == "camp2pconnector":
                 from vllm_ascend.distributed.CAMP2PAFDConnector import CAMP2PAFDConnectorMetadata
@@ -1062,7 +1062,7 @@ class DeepseekV2Model(nn.Module):
                     aiv_num = 48,
                     batch_size = self.max_num_reqs,
                     h = self.config.hidden_size,
-                    k = self.num_experts_per_tok
+                    k = self.config.num_experts_per_tok
                 )
 
             metadata = AFDConnectorMetadata.create_attention_metadata(
@@ -1109,7 +1109,7 @@ class DeepseekV2Model(nn.Module):
                                                                    ubatch_metadata[ubatch_idx],ubatch_idx)
                 # recv_hidden_states = afd_connector.recv_ffn_output(ubatch_hidden_states[ubatch_idx],
                 #                                                    ubatch_metadata[ubatch_idx],ubatch_idx)
-        elif self.connector_name == "camconnector":
+        elif self.connector_name == "camm2nconnector":
             recv_hidden_states = afd_connector.recv_ffn_output(hidden_states,
                                                                 metadata,
                                                                 forward_ctx.ubatch_idx)
