@@ -37,6 +37,10 @@ class AFDRecvHandle(ABC):
         raise NotImplementedError
 
 
+class AFDConnectorData(ABC):
+    """Base class for connector-specific metadata objects."""
+
+
 @dataclass
 class AFDRecvOutput:
     """Standardized output for recv_attn_output across all connectors."""
@@ -78,7 +82,7 @@ class AFDConnectorMetadata:
     num_ubatches: int = 1
     
     # Generic field for connector-specific data
-    connector_data: Any = None
+    connector_data: Optional["AFDConnectorData"] = None
     
     topk_idx: Optional[torch.Tensor] = None # indices token which expert to be sended
     topk_weights: Optional[torch.Tensor] = None # the expert weights
@@ -132,7 +136,7 @@ class AFDConnectorMetadata:
             device: torch.device,
             num_ubatches: int = 1,
             request_id: Optional[str] = None,
-            connector_data: Any = None,
+            connector_data: Optional["AFDConnectorData"] = None,
             topk_weights: Optional[torch.Tensor] = None,
             topk_ids: Optional[torch.Tensor] = None,
             row_idx: Optional[torch.Tensor] = None,
