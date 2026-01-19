@@ -40,7 +40,7 @@ from vllm.distributed import (get_ep_group, get_pp_group, set_substitute_tp,
                               get_tensor_model_parallel_world_size,
                               tensor_model_parallel_all_gather)
 from vllm.distributed.afd_transfer.afd_connector.metadata import (
-    AFDConnectorMetadata, FFNNeedForwardData)
+    AFDConnectorMetadata)
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.fused_moe import FusedMoE
 from vllm.model_executor.layers.layernorm import RMSNorm
@@ -993,12 +993,6 @@ class DeepseekV2Model(nn.Module):
 
         forward_ctx = get_forward_context()
         afd_connector = afd_metadata.afd_connector
-        moe_comm_type = forward_ctx.moe_comm_type
-        num_tokens = hidden_states.shape[0]
-        with_prefill = forward_ctx.with_prefill
-        num_actual_tokens = None
-        ffn_need_forward_data = FFNNeedForwardData(moe_comm_type, num_tokens, with_prefill, num_actual_tokens)
-
         for layer in islice(self.layers, self.start_layer, self.end_layer):
             # Compute dense layers on attn side.
             if layer.layer_idx < self.first_k_dense_replace:
@@ -1040,7 +1034,6 @@ class DeepseekV2Model(nn.Module):
                 dtype=hidden_states.dtype,
                 device=hidden_states.device,
                 num_ubatches=forward_ctx.num_ubatches,
-                ffn_need_forward_data=ffn_need_forward_data,
                 connector_data=None,
             )
 

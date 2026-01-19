@@ -11,11 +11,6 @@ import torch
 
 from abc import ABC, abstractmethod
 
-#TODO(yxj):move to AFDExtraFields
-# from vllm_ascend.ascend_forward_context import MoECommType
-from dataclasses import dataclass, field
-from typing import Dict
-
 
 class AFDRecvHandle(ABC):
     """
@@ -40,20 +35,6 @@ class AFDRecvHandle(ABC):
         Blocks until the data transfer or computation is finished.
         """
         raise NotImplementedError
-
-
-class FFNNeedForwardData:
-    def __init__(self,
-                 moe_comm_type: Any = None,
-                 num_input_tokens:int = 0,
-                 with_prefill:bool = False,
-                 total_num_scheduled_tokens:int = 0,
-                 is_dummy_run:bool = False):
-        self.moe_comm_type = moe_comm_type
-        self.num_input_tokens = num_input_tokens
-        self.with_prefill = with_prefill
-        self.total_num_scheduled_tokens = total_num_scheduled_tokens
-        self.is_dummy_run = is_dummy_run
 
 
 @dataclass
@@ -110,9 +91,6 @@ class AFDConnectorMetadata:
     send_handle_list: Optional[list[Any]] = None # the communication handles (list of Work objects returned by torch.distributed.isend)
     recv_handle_list: Optional[list[Any]] = None # the communication handles (list of Work objects returned by torch.distributed.irecv)
 
-    # TODO(jcz): need fix vllm_ascend dependency
-    ffn_need_forward_data: Optional[FFNNeedForwardData] = None
-    
     # Optional fields for debugging and extensibility
     request_id: Optional[str] = None
     timestamp: Optional[float] = None
@@ -154,7 +132,6 @@ class AFDConnectorMetadata:
             device: torch.device,
             num_ubatches: int = 1,
             request_id: Optional[str] = None,
-            ffn_need_forward_data:Optional[FFNNeedForwardData] = None,
             connector_data: Any = None,
             topk_weights: Optional[torch.Tensor] = None,
             topk_ids: Optional[torch.Tensor] = None,
@@ -169,7 +146,6 @@ class AFDConnectorMetadata:
                    num_ubatches=num_ubatches,
                    request_id=request_id,
                 #    timestamp=time.time(),
-                   ffn_need_forward_data=ffn_need_forward_data,
                    connector_data=connector_data,
                    topk_weights=topk_weights,
                    topk_ids=topk_ids,
