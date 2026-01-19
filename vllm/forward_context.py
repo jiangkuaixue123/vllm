@@ -303,6 +303,10 @@ class AFDMetadata:
     afd_connector: "AFDConnectorBase"
     afd_tokens_lens: list[int]  # padded lengths for tensor slicing
     num_of_stages: int
+    comm_stream1: torch.npu.Stream
+    comm_stream2: torch.npu.Stream
+    comm_stream1_event: torch.npu.ExternalEvent
+    comm_stream2_event: torch.npu.ExternalEvent
 
 
 @dataclass
