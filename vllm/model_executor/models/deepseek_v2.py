@@ -995,10 +995,11 @@ class DeepseekV2Model(nn.Module):
             # Compute dense layers on attn side.
             if layer.layer_idx < self.first_k_dense_replace:
                 hidden_states, residual = layer(positions, hidden_states, residual)
+                # hidden_states = apply_dbo_yield(hidden_states)
                 continue
             
             afd_connector = afd_metadata.afd_connector
-            afd_metadata.afd_stage_idx = dbo_current_ubatch_id()
+            afd_metadata.afd_stage_idx = forward_ctx.ubatch_idx
             start_idx = afd_metadata.afd_tokens_start_loc[afd_metadata.afd_stage_idx]
             end_idx = start_idx + afd_metadata.afd_tokens_lens[afd_metadata.afd_stage_idx]
 
@@ -1012,6 +1013,22 @@ class DeepseekV2Model(nn.Module):
                 for work in recv_handle:
                     work.wait()
 
+            if layer.layer_idx > self.first_k_dense_replace:
+                if self.connector_name == "m2nconnector":
+                    recv_hidden_states = afd_connector.recv_ffn_output(ubatch_hidden_states[ubatch_idx],
+                                                                        ubatch_metadata[ubatch_idx],ubatch_idx)
+                    # recv_hidden_states = afd_connector.recv_ffn_output(ubatch_hidden_states[ubatch_idx],
+                    #                                                    ubatch_metadata[ubatch_idx],ubatch_idx)
+                elif self.connector_name == "camm2nconnector":
+                    recv_hidden_states = afd_connector.recv_ffn_output(hidden_states,
+                                                                        metadata,
+                                                                        forward_ctx.ubatch_idx)
+                    
+                else:
+                    recv_hidden_states, _ = afd_connector.recv_ffn_output()
+                    
+                hidden_states = recv_hidden_states
+            
             current_hidden, residual, topk_weights, topk_ids, row_idx,router_logits= \
                 layer.compute_attn_output(positions, hidden_states, residual)
             if self.connector_name == "m2nconnector":
@@ -1032,7 +1049,7 @@ class DeepseekV2Model(nn.Module):
                     aiv_num = 48,
                     batch_size = self.max_num_reqs,
                     h = self.config.hidden_size,
-                    k = self.num_experts_per_tok
+                    k = self.config.num_experts_per_tok
                 )
             if self.connector_name == "camp2pconnector":
                 from vllm_ascend.distributed.CAMP2PAFDConnector import CAMP2PAFDConnectorMetadata
@@ -1045,7 +1062,7 @@ class DeepseekV2Model(nn.Module):
                     aiv_num = 48,
                     batch_size = self.max_num_reqs,
                     h = self.config.hidden_size,
-                    k = self.num_experts_per_tok
+                    k = self.config.num_experts_per_tok
                 )
 
             metadata = AFDConnectorMetadata.create_attention_metadata(
@@ -1054,6 +1071,7 @@ class DeepseekV2Model(nn.Module):
                 seq_len=hidden_states.shape[0],
                 dtype=hidden_states.dtype,
                 device=hidden_states.device,
+                num_ubatches=forward_ctx.num_ubatches,
                 ffn_need_forward_data=ffn_need_forward_data,
                 m2n_afdconnector_data=m2n_afdconnector_data if self.connector_name == "m2nconnector" else None,
                 cam_m2n_afdconnector_data=cam_afdconnector_data if self.connector_name == "camm2nconnector" else None,
@@ -1065,17 +1083,12 @@ class DeepseekV2Model(nn.Module):
                 metadata.m2n_afdconnector_data.handle = handle
                 hidden_states = afd_connector.recv_ffn_output(hidden_states,metadata)
             elif self.connector_name == "camm2nconnector":
-                output_list = afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
-                hidden_states1, dynamic_scales, expandIdx, expertTokenNums, epRecvCounts, simulateExpertIds, simulateExpertScales, attenBatchSize = output_list[0:8]
-                handle = [simulateExpertIds, simulateExpertScales, expandIdx, epRecvCounts, attenBatchSize]
-                metadata.cam_m2n_afdconnector_data.handle = handle
-                hidden_states = afd_connector.recv_ffn_output(hidden_states, metadata)
+                hidden_states = afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
             elif self.connector_name == "camp2pconnector":
                 output_list = afd_connector.send_attn_output(current_hidden, topk_weights, topk_ids, metadata)
                 hidden_states1, simulateExpertIds, simulateExpertScales, attenBatchSize, xActiveMaskOut = output_list[0:5]
                 handle = [hidden_states1, simulateExpertIds, simulateExpertScales, attenBatchSize]
                 metadata.cam_p2p_afdconnector_data.handle = handle
-                hidden_states = afd_connector.recv_ffn_output(hidden_states, metadata)
             else:
                 afd_connector.send_attn_output(hidden_states = current_hidden,
                                                router_logits = router_logits,
@@ -1085,10 +1098,19 @@ class DeepseekV2Model(nn.Module):
                                                metadata = metadata)
                 hidden_states, _ = afd_connector.recv_ffn_output()
                 
+            hidden_states = apply_dbo_yield(hidden_states)
             
-
-            if dbo_enabled():
-                dbo_yield()
+        if self.connector_name == "m2nconnector":
+                recv_hidden_states = afd_connector.recv_ffn_output(ubatch_hidden_states[ubatch_idx],
+                                                                   ubatch_metadata[ubatch_idx],ubatch_idx)
+        elif self.connector_name == "camm2nconnector":
+            recv_hidden_states = afd_connector.recv_ffn_output(hidden_states,
+                                                                metadata,
+                                                                forward_ctx.ubatch_idx)
+        else:
+            recv_hidden_states, _ = afd_connector.recv_ffn_output()
+        hidden_states = recv_hidden_states
+        
         return hidden_states, residual
 
     def forward(
@@ -1118,6 +1140,7 @@ class DeepseekV2Model(nn.Module):
         else:
             for layer in islice(self.layers, self.start_layer, self.end_layer):
                 hidden_states, residual = layer(positions, hidden_states, residual)
+                hidden_states = apply_dbo_yield(hidden_states)
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
@@ -1473,3 +1496,25 @@ def get_spec_layer_idx_from_weight_name(config: Union[DeepseekV2Config,
             if weight_name.startswith(f"model.layers.{layer_idx+i}."):
                 return layer_idx + i
     return None
+
+from vllm.utils import direct_register_custom_op
+
+
+def manual_dbo_yield_op(x: torch.Tensor) -> torch.Tensor:
+    if dbo_enabled():
+        dbo_yield()
+    return x
+
+def manual_dbo_yield_fake(x: torch.Tensor) -> torch.Tensor:
+    return x
+
+
+direct_register_custom_op(
+    op_name="manual_dbo_yield",
+    op_func=manual_dbo_yield_op,
+    fake_impl=manual_dbo_yield_fake,
+    mutates_args=[] 
+)
+
+def apply_dbo_yield(x: torch.Tensor) -> torch.Tensor:
+    return torch.ops.vllm.manual_dbo_yield(x)

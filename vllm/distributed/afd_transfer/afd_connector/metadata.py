@@ -120,6 +120,7 @@ class AFDConnectorMetadata:
     # multiple sequences
     dtype: torch.dtype
     device: torch.device
+    num_ubatches: int = 1
     topk_idx: Optional[torch.Tensor] = None # indices token which expert to be sended
     topk_weights: Optional[torch.Tensor] = None # the expert weights
     moe_expert_num: Optional[int] = None # number of moe experts
@@ -177,6 +178,7 @@ class AFDConnectorMetadata:
             seq_len: int,
             dtype: torch.dtype,
             device: torch.device,
+            num_ubatches: int = 1,
             request_id: Optional[str] = None,
             ffn_need_forward_data:Optional[FFNNeedForwardData] = None,
             m2n_afdconnector_data:Optional[M2NAFDConnectorMetadata] = None,
@@ -192,6 +194,7 @@ class AFDConnectorMetadata:
                    seq_lens=[seq_len],
                    dtype=dtype,
                    device=device,
+                   num_ubatches=num_ubatches,
                    request_id=request_id,
                 #    timestamp=time.time(),
                    ffn_need_forward_data=ffn_need_forward_data,

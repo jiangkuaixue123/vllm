@@ -4,7 +4,7 @@
 import time
 from collections import defaultdict
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, NamedTuple, Optional, Union
 
 import torch
@@ -330,6 +330,10 @@ class ForwardContext:
     batch_descriptor: Optional[BatchDescriptor] = None
 
     ubatch_slices: Optional[UBatchSlices] = None
+    ubatch_idx: int = 0
+    num_ubatches: int = 1
+    # TODO(yxj):to support different afdconnector
+    cam_afdconnector_data: Optional[Any] = None
 
     def __post_init__(self):
         assert self.cudagraph_runtime_mode in [
@@ -356,7 +360,8 @@ def create_forward_context(
     cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
     batch_descriptor: BatchDescriptor | None = None,
     ubatch_slices: UBatchSlices | None = None,
-    afd_metadata: AFDMetadata | None = None
+    afd_metadata: AFDMetadata | None = None,
+    ubatch_idx: int = 0
 ):
     return ForwardContext(
         no_compile_layers=vllm_config.compilation_config.static_forward_context,
@@ -366,7 +371,8 @@ def create_forward_context(
         cudagraph_runtime_mode=cudagraph_runtime_mode,
         batch_descriptor=batch_descriptor,
         ubatch_slices=ubatch_slices,
-        afd_metadata=afd_metadata
+        afd_metadata=afd_metadata,
+        ubatch_idx=ubatch_idx
     )
 
 
