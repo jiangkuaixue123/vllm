@@ -675,6 +675,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         self.role = self.afd_config.afd_role if self.afd_config is not None else None
         self.connector_name = self.afd_config.afd_connector if self.afd_config is not None else None
         self.hidden_size = config.hidden_size
+        self.topk = config.num_experts_per_tok
         rope_theta = getattr(config, "rope_theta", 10000)
         rope_scaling = getattr(config, "rope_scaling", None)
         max_position_embeddings = getattr(config, "max_position_embeddings",
@@ -725,15 +726,6 @@ class DeepseekV2DecoderLayer(nn.Module):
                     prefix=f"{prefix}.mlp",
                 )
         if self.role is not None and self.role == "attention":
-            # if layer_idx < config.first_k_dense_replace:
-            #     print('开始加载attn侧的mlp')
-            #     self.mlp = DeepseekV2MLP(
-            #         hidden_size=config.hidden_size,
-            #         intermediate_size=config.intermediate_size,
-            #         hidden_act=config.hidden_act,
-            #         quant_config=quant_config,
-            #         prefix=f"{prefix}.mlp",
-            #     )
             # 这里增加gating的初始化
             if layer_idx >= config.first_k_dense_replace:
                 self.gate = ReplicatedLinear(config.hidden_size,
@@ -865,14 +857,37 @@ class DeepseekV2DecoderLayer(nn.Module):
             topk_weights, topk_ids, row_idx = select_experts(
                 hidden_states=hidden_states,
                 router_logits=router_logits,
-                top_k=8,
+                top_k=self.topk,
                 use_grouped_topk=False,
                 renormalize=True,
                 e_score_correction_bias=self.gate.e_score_correction_bias,
                 )
-        
-            topk_weights = topk_weights.to(torch.float)
 
+            topk_weights = topk_weights.to(torch.float)
+            # vllm ascend v0.13
+            # this is a naive implementation for experts load balance so as
+            # to avoid accumulating too much tokens on a single rank.
+            # currently it is only activated when doing profile runs.
+            # TODO(yxj):delete me 
+            # print(f'yxj topk_ids shape is {topk_ids.shape}')
+            global_num_experts = 256 
+            global_redundant_expert_num = 0
+            enable_force_load_balance = True
+            if enable_force_load_balance:
+                random_matrix = torch.rand(topk_ids.size(0),
+                                        global_num_experts -
+                                        global_redundant_expert_num,
+                                        device=topk_ids.device)
+                topk_ids = torch.argsort(
+                    random_matrix, dim=1)[:, :topk_ids.size(1)].to(topk_ids.dtype)
+                
+            # # vllm ascend v0.11
+            # # this is a naive implementation for experts load balance so as
+            # # to avoid accumulating too much tokens on a single rank.
+            # # currently it is only activated when doing profile runs.
+            # if enable_force_load_balance:
+            #     topk_ids = torch.randint_like(
+            #         topk_ids, 0, global_num_experts - global_redundant_expert_num)
         return hidden_states, residual, topk_weights, topk_ids, row_idx ,router_logits
 
     def compute_ffn_output(self,
