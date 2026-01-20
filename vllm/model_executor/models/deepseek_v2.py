@@ -1050,7 +1050,7 @@ class DeepseekV2Model(nn.Module):
                 from vllm_ascend.distributed.M2NAFDConnector import M2NAFDConnectorMetadata
                 m2n_afdconnector_data = M2NAFDConnectorMetadata()
                 m2n_afdconnector_data.moe_expert_num = self.config.n_routed_experts
-                m2n_afdconnector_data.quant_mode = 0
+                m2n_afdconnector_data.quant_mode = 1
                 m2n_afdconnector_data.aiv_num = 48
                 m2n_afdconnector_data.scale = None
             if self.connector_name == "camm2nconnector":
@@ -1060,7 +1060,7 @@ class DeepseekV2Model(nn.Module):
                     shared_expert_num = 0,
                     scale = None,
                     handle = None,
-                    quant_mode = 0,
+                    quant_mode = 1,
                     aiv_num = 48,
                     batch_size = self.max_num_reqs,
                     h = self.config.hidden_size,
@@ -1073,7 +1073,7 @@ class DeepseekV2Model(nn.Module):
                     shared_expert_num = 0,
                     scale = None,
                     handle = None,
-                    quant_mode = 0,
+                    quant_mode = 1,
                     aiv_num = 48,
                     batch_size = self.max_num_reqs,
                     h = self.config.hidden_size,
