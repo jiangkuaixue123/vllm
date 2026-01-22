@@ -1091,7 +1091,6 @@ class DeepseekV2Model(nn.Module):
         else:
             for layer in islice(self.layers, self.start_layer, self.end_layer):
                 hidden_states, residual = layer(positions, hidden_states, residual)
-                hidden_states = apply_dbo_yield(hidden_states)
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors({
