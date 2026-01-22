@@ -17,6 +17,7 @@ logger = init_logger(__name__)
 
 class AFDConnectorFactory:
     _registry: dict[str, Callable[[], type[AFDConnectorBase]]] = {}
+    _plugins_loaded: bool = False
 
     @classmethod
     def register_connector(cls, name: str, module_path: str,
@@ -35,19 +36,20 @@ class AFDConnectorFactory:
     def create_connector(cls, rank: int, local_rank: int,
                          config: "VllmConfig") -> AFDConnectorBase:
         """Create an AFD connector based on the configuration.
-        
+
         Args:
             rank: Global rank of this process
             local_rank: Local rank within the node
             config: VllmConfig containing AFDConfig
-            
+
         Returns:
             AFDConnectorBase: The created connector instance
-            
+
         Raises:
             ValueError: If the transport backend is not supported
             ImportError: If required dependencies are not available
         """
+        cls.load_plugins()
         afd_config = config.afd_config
         connector_name = afd_config.afd_connector
 
@@ -62,20 +64,50 @@ class AFDConnectorFactory:
     def get_connector_class(cls,
                             connector_name: str) -> type[AFDConnectorBase]:
         """Get the connector class for a given connector name.
-        
+
         Args:
             connector_name: The connector name
-            
+
         Returns:
             type[AFDConnectorBase]: The connector class
-            
+
         Raises:
             ValueError: If the connector name is not supported
         """
+        cls.load_plugins()
         if connector_name not in cls._registry:
             raise ValueError(f"Unsupported connector type: {connector_name}")
 
         return cls._registry[connector_name]()
+
+    @classmethod
+    def load_plugins(cls):
+        """Load connectors from entry points."""
+        if cls._plugins_loaded:
+            return
+        cls._plugins_loaded = True
+
+        import sys
+        if sys.version_info < (3, 10):
+            from importlib.metadata import entry_points
+            eps = entry_points()
+            if "vllm.afd_connectors" in eps:
+                plugin_eps = eps["vllm.afd_connectors"]
+            else:
+                plugin_eps = []
+        else:
+            from importlib.metadata import entry_points
+            plugin_eps = entry_points(group="vllm.afd_connectors")
+
+        for entry_point in plugin_eps:
+            try:
+                register_func = entry_point.load()
+                register_func()
+                logger.info(f"Loaded AFD connector plugin: {entry_point.name}")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load AFD connector plugin {entry_point.name}: {e}"
+                )
 
 
 # Register various connectors here.
@@ -93,11 +125,3 @@ AFDConnectorFactory.register_connector(
 AFDConnectorFactory.register_connector(
     "p2pconnector", "vllm.distributed.afd_transfer.afd_connector.p2p_connector",
     "P2PAFDConnector")
-
-AFDConnectorFactory.register_connector(
-    "m2nconnector", "vllm_ascend.distributed.M2NAFDConnector",
-    "M2NAFDConnector")
-
-AFDConnectorFactory.register_connector(
-    "camconnector", "vllm_ascend.distributed.CAMAFDConnector",
-    "CAMAFDConnector")
