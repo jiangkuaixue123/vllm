@@ -270,7 +270,7 @@ class SharedStorageConnector(KVConnectorBase_V1):
                 and self.afd_config.afd_extra_config is not None
                 and self.afd_config.afd_extra_config.get("decode_only") is not None
                 and self.afd_config.afd_extra_config.get("decode_only")):
-            return len(request.porompt_token_ids) - 1, False
+            return len(request.prompt_token_ids) - 1, False
         if not self._found_match_for_request(request):
             return 0, False
 
