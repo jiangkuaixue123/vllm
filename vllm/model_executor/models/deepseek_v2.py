@@ -93,6 +93,10 @@ from .utils import (
     make_layers,
     maybe_prefix,
 )
+from vllm.forward_context import AFDMetadata, get_forward_context
+from vllm.distributed.afd_transfer.afd_connector.metadata import (
+    AFDConnectorMetadata,
+)
 
 if current_platform.is_cuda_alike():
     from vllm import _custom_ops as ops
