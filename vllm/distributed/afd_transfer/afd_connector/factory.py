@@ -93,3 +93,9 @@ AFDConnectorFactory.register_connector(
     "vllm.distributed.afd_transfer.afd_connector.p2p_connector",
     "P2PAFDConnector",
 )
+
+AFDConnectorFactory.register_connector(
+    "stepmeshconnector",
+    "vllm.distributed.afd_transfer.afd_connector.stepmesh_connector",
+    "StepMeshAFDConnector",
+)
