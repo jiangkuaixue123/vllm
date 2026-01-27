@@ -180,7 +180,7 @@ class StepMeshAFDConnector(AFDConnectorBase):
                         if self.thread_stop.is_set():
                             break
                         continue
-                    seq_len = self.send_attn_seq_len
+                    seq_len = 1024
                     recv_buff = [t[:seq_len] for t in self.recv_buffer[stage_id]]
                     recv_key = [stage_id + 1000]
 
