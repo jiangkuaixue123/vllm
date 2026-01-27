@@ -106,6 +106,21 @@ class AFDConnectorBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def send_ffn_output(
+        self,
+        ffn_output: torch.Tensor,
+        metadata: "AFDConnectorMetadata",
+    ) -> None:
+        """Send FFN computation result back to attention workers.
+
+        Args:
+            ffn_output: Computed FFN result
+            metadata: AFD metadata containing seq_lens
+                      for splitting and routing info
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     def recv_attn_output(
         self,
         timeout_ms: int | None = None,
@@ -120,20 +135,5 @@ class AFDConnectorBase(ABC):
                 - hidden_states: Concatenated attention outputs
                 - metadata: Inferred AFD metadata containing
                             seq_lens and other info
-        """
-        raise NotImplementedError
-
-    @abstractmethod
-    def send_ffn_output(
-        self,
-        ffn_output: torch.Tensor,
-        metadata: "AFDConnectorMetadata",
-    ) -> None:
-        """Send FFN computation result back to attention workers.
-
-        Args:
-            ffn_output: Computed FFN result
-            metadata: AFD metadata containing seq_lens
-                      for splitting and routing info
         """
         raise NotImplementedError
