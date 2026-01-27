@@ -524,7 +524,7 @@ class StepMeshAFDConnector(AFDConnectorBase):
                     "-c",
                     "import torch; import fserver_lib as ps; import os; "
                     'os.environ["DMLC_ROLE"] = "scheduler"; '
-                    'os.environ["DMLC_INTERFACE"] = "brainpf0"; '
+                    'os.environ["DMLC_INTERFACE"] = "bond0"; '
                     "ps.init(); ps.stop()",
                 ],
                 env=os.environ.copy(),
