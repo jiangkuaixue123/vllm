@@ -27,6 +27,8 @@ if TYPE_CHECKING:
     from vllm.model_executor.model_loader.tensorizer import TensorizerConfig
     from vllm.v1.kv_cache_interface import KVCacheConfig, KVCacheSpec
 
+from vllm.config import CUDAGraphMode
+
 logger = init_logger(__name__)
 
 
@@ -53,7 +55,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                 torch.profiler.ProfilerActivity.CUDA,
             ],
             schedule=torch.profiler.schedule(
-                wait=6000 * 27 + 4000 * 27 * 2, warmup=1, active=30, repeat=1
+                wait=120, warmup=1, active=30, repeat=1
             ),
             on_trace_ready=torch.profiler.tensorboard_trace_handler(
                 "./profiler_logs/ffn"
@@ -120,6 +122,72 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
 
     def _get_current_layer_idx(self) -> int:
         return (self._counter // self.afd_config.num_afd_stages) % self.num_layers
+    
+    def _ffn_forward(self,
+                     batch_descriptor = None,
+                     cudagraph_runtime_mode: CUDAGraphMode = CUDAGraphMode.NONE,
+                     is_ubatch:bool=False):
+        # num_ubatches = self.parallel_config.num_ubatches if is_ubatch else 1
+        num_ubatches = 1
+        rank_ffn_output = None
+        # for layer_idx in range(self.first_k_dense_replace,self.num_layers):
+        for layer_idx in range(0, self.num_layers):
+            for ubatch_idx in range(num_ubatches):
+                hidden_states, recv_metadata = self.connector.recv_attn_output()
+                if hasattr(self.connector, "dp_metadata_list"):
+                    dp_metadata = self.connector.dp_metadata_list.get(
+                        recv_metadata.stage_idx, None
+                    )
+                else:
+                    dp_metadata = None
+                # if recv_metadata is not None and recv_metadata.recv_handle_list is not None:
+                #     for work in recv_metadata.recv_handle_list:
+                #         work.wait()
+                # Try to use CUDA graph if available
+                with set_forward_context(
+                    attn_metadata=None, vllm_config=self.vllm_config
+                ):
+                    get_forward_context().dp_metadata = dp_metadata
+                    rank_ffn_output = self._execute_eager_mode(
+                        hidden_states, layer_idx
+                    )
+                # send
+                recv_metadata.recv_handle_list = None
+                self.connector.send_ffn_output(rank_ffn_output, recv_metadata)
+        return rank_ffn_output
+    
+    # @torch.inference_mode()
+    # def execute_model(self, scheduler_output=None, intermediate_tensors=None, is_ubatch:bool=False):
+    #     """Execute FFN computation for a single request"""
+    #     # self.prof.step()
+    #     try:
+    #         if self.use_cuda_graph and not is_ubatch:
+    #             # TODO(yxj):use _acl_graphs_full replay
+    #             self._ffn_forward(aclgraph_runtime_mode=CUDAGraphMode.NONE, is_ubatch=is_ubatch)
+    #             print(f"is_ubatch is false eager",flush=True)
+    #         elif self.use_cuda_graph and is_ubatch:
+    #             # TODO(jcz):use _cuda_graphs_ubatch_full replay
+    #             pass
+    #             # # replay
+    #             # if self.connector_name == "camm2nconnector":
+    #             #     #TODO(yxj):self.decode_max_num_token * self.attn_size * (self.topk // self.ffn_size)
+    #             #     max_num_tokens = self.decode_max_num_token * self.attn_size * (self.n_routed_experts // self.ffn_size)
+    #             # else:
+    #             #     max_num_tokens = self.decode_max_num_token * self.topk * self.attn_size
+    #             # acl_graph_info = self._acl_graphs_ubatch_full.get(max_num_tokens)
+    #             # graph = acl_graph_info['graph']
+    #             # graph.replay()
+    #             # self.replay_cnt += 1
+    #             # print(f"ffn replay,replay_cnt is {self.replay_cnt}", flush=True)
+    #         else:
+    #             print(f"ffn_forward,is_ubatch is {is_ubatch}", flush=True)
+    #             self._ffn_forward(aclgraph_runtime_mode=CUDAGraphMode.NONE, is_ubatch=is_ubatch) 
+            
+    #     except Exception as e:
+    #         raise ValueError(
+    #             f"Error computing FFN: {e}"
+    #         ) from e
+    #     return None  # FFN server doesn't return ModelRunnerOutput
 
     @torch.inference_mode()
     def execute_model(self, scheduler_output=None, intermediate_tensors=None):
@@ -129,7 +197,8 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         self.profiler.step()
 
         try:
-            hidden_states, recv_metadata = self.connector.recv_attn_output()
+            with torch.profiler.record_function("recv_attn_output"):
+                hidden_states, recv_metadata = self.connector.recv_attn_output()
             if hasattr(self.connector, "dp_metadata_list"):
                 dp_metadata = self.connector.dp_metadata_list.get(
                     recv_metadata.stage_idx, None
@@ -137,10 +206,6 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             else:
                 dp_metadata = None
             current_layer_idx = recv_metadata.layer_idx
-            # logger.info(
-            #     f"layer {current_layer_idx} moe recv hidden states type:{type(hidden_states)}, shape:{hidden_states.shape}"
-            #     f" dp_metadata: {dp_metadata}"
-            # )
             num_tokens = hidden_states.shape[0]
             if recv_metadata is not None and recv_metadata.recv_handle_list is not None:
                 for work in recv_metadata.recv_handle_list:
@@ -167,7 +232,8 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                     )
 
             recv_metadata.recv_handle_list = None
-            self.connector.send_ffn_output(rank_ffn_output, recv_metadata)
+            with torch.profiler.record_function("send_ffn_output"):
+                self.connector.send_ffn_output(rank_ffn_output, recv_metadata)
         except Exception as e:
             raise ValueError(f"Error computing FFN: {e}") from e
         finally:
@@ -328,7 +394,7 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
             "output": output,
         }
 
-        logger.debug(
+        logger.info(
             "Captured CUDA graph for layer %s with %s tokens", layer_idx, num_tokens
         )
 

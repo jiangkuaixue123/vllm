@@ -326,7 +326,8 @@ class StepMeshAFDConnector(AFDConnectorBase):
             raise ValueError("Attention side should have single sequence")
 
         self.send_attn_seq_len = metadata.seq_lens[0]
-        self.send_buffer[0][:self.send_attn_seq_len].copy_(hidden_states[:self.send_attn_seq_len], non_blocking=True)
+        # self.send_buffer[0][:self.send_attn_seq_len].copy_(hidden_states[:self.send_attn_seq_len], non_blocking=True)
+        self.send_buffer[0][:self.send_attn_seq_len].copy_(hidden_states[:self.send_attn_seq_len])
 
         self.layer_idx = metadata.layer_idx
         torch.ops.ps.seq_add_one(self.sequence_tensor)
@@ -391,7 +392,8 @@ class StepMeshAFDConnector(AFDConnectorBase):
                 split_outputs = [ffn_output]
 
             comm_handles = self._current_comm_handles
-            ps.respond_vec(self.ret_buffer, split_outputs, comm_handles)
+            with torch.profiler.record_function("ps.respond_vec"):
+                ps.respond_vec(self.ret_buffer, split_outputs, comm_handles)
             self.recv_attn_output_counter += 1
 
         except Exception as e:
@@ -416,7 +418,8 @@ class StepMeshAFDConnector(AFDConnectorBase):
         try:
             # batches = self.signal.get_batch() # type: ignore
             logger.info(f"FFN-{self.local_rank}: get batch called")
-            batches = ps.get_batch()  # type: ignore
+            with torch.profiler.record_function("ps.get_batch"):
+                batches = ps.get_batch()  # type: ignore
             logger.info(f"FFN-{self.local_rank}: get batch finished")
 
             # Extract tensors and build metadata

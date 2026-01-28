@@ -27,6 +27,7 @@ class AFDFFNServer:
     """AFD FFN Server main class."""
 
     def __init__(self, args: Any):
+        logger.info(f"jcz AFDFFNServer __init__ args:{args}")
         engine_args = AsyncEngineArgs.from_cli_args(args)
         self.vllm_config = engine_args.create_engine_config()
         logger.info("Start AFD FFN Server with vllm_config: %s", self.vllm_config)

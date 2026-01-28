@@ -76,17 +76,21 @@ class P2PAFDConnector(AFDConnectorBase):
         role = self.config.afd_config.afd_role
         attn_size, ffn_size = map(int, re.match(r"(\d+)\D+(\d+)", afd_size).groups())
         world_rank = self.rank if role == "attention" else self.rank + attn_size
+        init_method = (
+            f"tcp://{self.config.afd_config.afd_host}"
+            f":{self.config.afd_config.afd_port}"
+        )
+        logger.info("jcz init_method:{}".format(init_method))
+        logger.info("jcz init_afd_process_group 1")
         afd_pg = init_afd_process_group(
             backend="nccl",
-            init_method=(
-                f"tcp://{self.config.afd_config.afd_host}"
-                f":{self.config.afd_config.afd_port}"
-            ),
+            init_method=init_method,
             world_size=ffn_size + attn_size,
             rank=world_rank,
             group_name="afd",
-            timeout=timedelta(minutes=2),
+            timeout=timedelta(minutes=20),
         )
+        logger.info("jcz init_afd_process_group 2")
 
         # Construct rank lists for sub groups.
         # Each group contains one attention and one ffn rank.
@@ -106,18 +110,21 @@ class P2PAFDConnector(AFDConnectorBase):
             # e2a_group: for expert/ffn -> attention communication (send_ffn, recv_ffn)
             # The communication domain (rank range) is the same, but different group_name
             # creates independent groups.
+            logger.info("jcz init_afd_process_group 3")
             self.a2e_group = init_model_parallel_group(
                 sub_group_ranks,
                 self.local_rank,
                 backend="nccl",
                 group_name="a2e",
             )
+            logger.info("jcz init_afd_process_group 4")
             self.e2a_group = init_model_parallel_group(
                 sub_group_ranks,
                 self.local_rank,
                 backend="nccl",
                 group_name="e2a",
             )
+        logger.info("jcz init_afd_process_group 5")
 
         self._initialized = True
 

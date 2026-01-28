@@ -1087,7 +1087,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         return hidden_states
 
 
-
+@support_torch_compile
 class DeepseekV2Model(nn.Module):
     fall_back_to_pt_during_load = False
 
@@ -1158,6 +1158,7 @@ class DeepseekV2Model(nn.Module):
             current_hidden, residual = layer(
                 positions, hidden_states, residual, llama_4_scaling
             )
+            logger.info(f"jcz forward_with_afd layer_idx:{layer.layer_idx}, stage_idx:{afd_metadata.afd_stage_idx}")
             metadata = AFDConnectorMetadata.create_attention_metadata(
                 layer_idx=layer.layer_idx,
                 stage_idx=afd_metadata.afd_stage_idx,
