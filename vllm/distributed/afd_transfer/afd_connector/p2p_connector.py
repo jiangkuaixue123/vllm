@@ -251,7 +251,7 @@ class P2PAFDConnector(AFDConnectorBase):
         except Exception as e:
             raise RuntimeError(f"Communication error: {e}")
 
-    def recv_attn_output(self) -> IntermediateTensors:
+    def recv_attn_output(self) -> Any:
         """
         This method will be called by the FFN side.
 
@@ -270,10 +270,28 @@ class P2PAFDConnector(AFDConnectorBase):
         # Asynchronously receive independent metadata
         metadata = self.a2e_group.recv_object(src)
         metadata.recv_handle_list = work_list
+        
+        from vllm.distributed.afd_transfer.afd_connector.metadata import AFDRecvOutput
         if self.backend == "hccl":
-            return intermediate_tensors["hidden_states"],intermediate_tensors["router_logits"],intermediate_tensors["topk_weights"],intermediate_tensors["topk_ids"],intermediate_tensors["row_idx"], metadata
+            return AFDRecvOutput(
+                hidden_states=intermediate_tensors["hidden_states"],
+                metadata=metadata,
+                router_logits=intermediate_tensors["router_logits"],
+                topk_weights=intermediate_tensors["topk_weights"],
+                topk_ids=intermediate_tensors["topk_ids"],
+                row_idx=intermediate_tensors["row_idx"]
+            )
         else:
-            return intermediate_tensors["hidden_states"], metadata
+            return AFDRecvOutput(
+                hidden_states=intermediate_tensors["hidden_states"],
+                metadata=metadata
+            )
+
+    def create_recv_metadata(self, **kwargs):
+        return None
+
+    def update_metadata(self, metadata, recv_output):
+        pass
 
     # -------------------------------------------------------------------------
     #                                attn <- ffn

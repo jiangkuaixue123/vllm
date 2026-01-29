@@ -33,7 +33,7 @@ def should_ubatch_with_num_tokens(
 
 def check_ubatch_thresholds(config: ParallelConfig, num_tokens: int,
                             uniform_decode: bool) -> bool:
-    if not config.enable_dbo:
+    if not config.use_ubatching:
         return False
     if uniform_decode:
         return num_tokens >= config.dbo_decode_token_threshold
