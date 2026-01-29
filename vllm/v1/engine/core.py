@@ -102,9 +102,11 @@ class EngineCore:
         self.log_stats = log_stats
 
         # Setup Model.
+        logger.info(f"jcz EngineCore 1")
         self.model_executor = executor_class(vllm_config)
         if executor_fail_callback is not None:
             self.model_executor.register_failure_callback(executor_fail_callback)
+        logger.info(f"jcz EngineCore 2")
 
         self.afd_config = vllm_config.afd_config
         if self.afd_config and self.afd_config.afd_role == "ffn":
@@ -116,29 +118,29 @@ class EngineCore:
         num_gpu_blocks, num_cpu_blocks, kv_cache_config = self._initialize_kv_caches(
             vllm_config
         )
-
+        logger.info(f"jcz EngineCore 3")
         vllm_config.cache_config.num_gpu_blocks = num_gpu_blocks
         vllm_config.cache_config.num_cpu_blocks = num_cpu_blocks
         self.collective_rpc("initialize_cache", args=(num_gpu_blocks, num_cpu_blocks))
-
+        logger.info(f"jcz EngineCore 4")
         self.structured_output_manager = StructuredOutputManager(vllm_config)
-
+        logger.info(f"jcz EngineCore 5")
         # Setup scheduler.
         Scheduler = vllm_config.scheduler_config.get_scheduler_cls()
-
+        logger.info(f"jcz EngineCore 6")
         if len(kv_cache_config.kv_cache_groups) == 0:  # noqa: SIM102
             # Encoder models without KV cache don't support
             # chunked prefill. But do SSM models?
             if vllm_config.scheduler_config.enable_chunked_prefill:
                 logger.warning("Disabling chunked prefill for model without KVCache")
                 vllm_config.scheduler_config.enable_chunked_prefill = False
-
+        logger.info(f"jcz EngineCore 7")
         scheduler_block_size = (
             vllm_config.cache_config.block_size
             * vllm_config.parallel_config.decode_context_parallel_size
             * vllm_config.parallel_config.prefill_context_parallel_size
         )
-
+        logger.info(f"jcz EngineCore 8")
         self.scheduler: SchedulerInterface = Scheduler(
             vllm_config=vllm_config,
             kv_cache_config=kv_cache_config,
@@ -150,12 +152,12 @@ class EngineCore:
         self.use_spec_decode = vllm_config.speculative_config is not None
         if self.scheduler.connector is not None:  # type: ignore
             self.model_executor.init_kv_output_aggregator(self.scheduler.connector)  # type: ignore
-
+        logger.info(f"jcz EngineCore 9")
         self.mm_registry = mm_registry = MULTIMODAL_REGISTRY
         self.mm_receiver_cache = mm_registry.engine_receiver_cache_from_config(
             vllm_config
         )
-
+        logger.info(f"jcz EngineCore 10")
         # If a KV connector is initialized for scheduler, we want to collect
         # handshake metadata from all workers so the connector in the scheduler
         # will have the full context
@@ -166,7 +168,7 @@ class EngineCore:
             xfer_handshake_metadata = (
                 self.model_executor.get_kv_connector_handshake_metadata()
             )
-
+            logger.info(f"jcz EngineCore 11")
             if xfer_handshake_metadata:
                 # xfer_handshake_metadata is list of dicts from workers
                 # Each dict already has structure {tp_rank: metadata}
@@ -176,7 +178,7 @@ class EngineCore:
                     if worker_dict is not None:
                         content.update(worker_dict)
                 kv_connector.set_xfer_handshake_metadata(content)
-
+        logger.info(f"jcz EngineCore 12")
         # Setup batch queue for pipeline parallelism.
         # Batch queue for scheduled batches. This enables us to asynchronously
         # schedule and execute batches, and is required by pipeline parallelism
@@ -188,33 +190,35 @@ class EngineCore:
         if self.batch_queue_size > 1:
             logger.debug("Batch queue is enabled with size %d", self.batch_queue_size)
             self.batch_queue = deque(maxlen=self.batch_queue_size)
-
+        logger.info(f"jcz EngineCore 13")
         self.is_ec_producer = (
             vllm_config.ec_transfer_config is not None
             and vllm_config.ec_transfer_config.is_ec_producer
         )
         self.is_pooling_model = vllm_config.model_config.runner_type == "pooling"
-
+        logger.info(f"jcz EngineCore 14")
         self.request_block_hasher: Callable[[Request], list[BlockHash]] | None = None
         if vllm_config.cache_config.enable_prefix_caching or kv_connector is not None:
             caching_hash_fn = get_hash_fn_by_name(
                 vllm_config.cache_config.prefix_caching_hash_algo
             )
             init_none_hash(caching_hash_fn)
-
+            logger.info(f"jcz EngineCore 15")
             self.request_block_hasher = get_request_block_hasher(
                 scheduler_block_size, caching_hash_fn
             )
-
+        logger.info(f"jcz EngineCore 16")
         self.step_fn = (
             self.step if self.batch_queue is None else self.step_with_batch_queue
         )
         self.async_scheduling = vllm_config.scheduler_config.async_scheduling
-
+        logger.info(f"jcz EngineCore 17")
         self.aborts_queue = queue.Queue[list[str]]()
+        logger.info(f"jcz EngineCore 18")
         # Mark the startup heap as static so that it's ignored by GC.
         # Reduces pause times of oldest generation collections.
         freeze_gc_heap()
+        logger.info(f"jcz EngineCore 19")
         # If enable, attach GC debugger after static variable freeze.
         maybe_attach_gc_debug_callback()
         # Enable environment variable cache (e.g. assume no more
@@ -227,8 +231,9 @@ class EngineCore:
         start = time.time()
 
         # Get all kv cache needed by the model
+        logger.info("jcz _initialize_kv_caches 1")
         kv_cache_specs = self.model_executor.get_kv_cache_specs()
-
+        logger.info("jcz _initialize_kv_caches 2")
         has_kv_cache = any(kv_cache_spec for kv_cache_spec in kv_cache_specs)
         if has_kv_cache:
             if os.environ.get("VLLM_ELASTIC_EP_SCALE_UP_LAUNCH") == "1":
@@ -248,30 +253,30 @@ class EngineCore:
         else:
             # Attention free models don't need memory for kv cache
             available_gpu_memory = [0] * len(kv_cache_specs)
-
+        logger.info("jcz _initialize_kv_caches 3")
         assert len(kv_cache_specs) == len(available_gpu_memory)
-
+        logger.info("jcz _initialize_kv_caches 4")
         # Track max_model_len before KV cache config to detect auto-fit changes
         max_model_len_before = vllm_config.model_config.max_model_len
-
+        logger.info("jcz _initialize_kv_caches 5")
         kv_cache_configs = get_kv_cache_configs(
             vllm_config, kv_cache_specs, available_gpu_memory
         )
-
+        logger.info("jcz _initialize_kv_caches 6")
         # If auto-fit reduced max_model_len, sync the new value to workers.
         # This is needed because workers were spawned before memory profiling
         # and have the original (larger) max_model_len cached.
         max_model_len_after = vllm_config.model_config.max_model_len
         if max_model_len_after != max_model_len_before:
             self.collective_rpc("update_max_model_len", args=(max_model_len_after,))
-
+        logger.info("jcz _initialize_kv_caches 7")
         scheduler_kv_cache_config = generate_scheduler_kv_cache_config(kv_cache_configs)
         num_gpu_blocks = scheduler_kv_cache_config.num_blocks
         num_cpu_blocks = 0
-
+        logger.info("jcz _initialize_kv_caches 8")
         # Initialize kv cache and warmup the execution
         self.model_executor.initialize_from_config(kv_cache_configs)
-
+        logger.info("jcz _initialize_kv_caches 9")  
         elapsed = time.time() - start
         logger.info_once(
             "init engine (profile, create kv cache, warmup model) took %.2f seconds",

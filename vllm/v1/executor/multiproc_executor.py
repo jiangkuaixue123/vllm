@@ -583,6 +583,7 @@ class WorkerProc:
 
         self.afd_config = vllm_config.afd_config
         self.afd_role = self.afd_config.afd_role if self.afd_config else None
+        logger.info("jcz init worker success")
 
     @staticmethod
     def make_worker_process(

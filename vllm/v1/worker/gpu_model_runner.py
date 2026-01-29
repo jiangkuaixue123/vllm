@@ -4056,6 +4056,7 @@ class GPUModelRunner(
                 self.model = UBatchWrapper(
                     self.model, self.vllm_config, CUDAGraphMode.NONE, self.device
                 )
+        logger.info("jcz load_model success")
 
     def _get_eagle3_aux_layers_from_config(self) -> tuple[int, ...] | None:
         """Extract Eagle3 auxiliary layer indices from speculative config.

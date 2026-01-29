@@ -10,7 +10,8 @@ from typing import Optional
 import fserver_lib as ps
 import torch
 import threading
-from torch.distributed.distributed_c10d import _get_default_group, _update_default_pg
+import torch.cuda.nvtx as nvtx
+import torch.distributed.distributed_c10d as c10d
 
 from vllm.config import VllmConfig
 from vllm.distributed.parallel_state import (
@@ -40,6 +41,7 @@ lib = torch.library.Library("ps", "DEF")
 lib.define("seq_add_one(Tensor(a!) seq) -> ()")
 lib.define("write_flag(Tensor(a!) flag, Tensor seq) -> ()")
 lib.define("wait_flag(Tensor(a!) flag, Tensor seq) -> ()")
+lib.define("wait_and_recv(Tensor(a!) flag, Tensor seq, Tensor(b!) recv_buf) -> ()")
 
 
 
@@ -55,6 +57,10 @@ def write_flag_meta(flag, seq):
 def wait_flag_meta(flag, seq):
     return
 
+@torch.library.impl(lib, "wait_and_recv", "Meta")
+def wait_and_recv_meta(flag, seq, recv_buf):
+    return
+
 
 @torch.library.impl(lib, "seq_add_one", "CUDA")
 def seq_add_one_cuda(seq):
@@ -66,6 +72,10 @@ def write_flag_cuda(flag, seq):
 
 @torch.library.impl(lib, "wait_flag", "CUDA")
 def wait_flag_cuda(flag, seq):
+    ps.wait_flag(flag, seq)
+
+@torch.library.impl(lib, "wait_and_recv", "CUDA")
+def wait_and_recv_cuda(flag, seq, recv_buf):
     ps.wait_flag(flag, seq)
 
 DEBUG = os.environ.get("STEPMESH_CONNECTOR_DEBUG", "false").lower() == "true"
@@ -187,6 +197,9 @@ class StepMeshAFDConnector(AFDConnectorBase):
                     send_buff = [self.send_buffer[stage_id][:seq_len]]
                     send_key = [stage_id + node_rank_offset]
                     logger.info(f"Attn-{self.local_rank}: cpu handle thread, push pull start, {signal_value=}")
+                    
+                    # Use NVTX to trace this operation in the background thread
+                    # nvtx.range_push("ps.push_pull_thread")
                     with torch.cuda.stream(self.comm_stream):
                         handler = ps.push_pull(
                             send_buff,
@@ -195,8 +208,14 @@ class StepMeshAFDConnector(AFDConnectorBase):
                             recv_key,
                             need_event=False,
                         )
+                    # nvtx.range_pop()
+                    
                     logger.info(f"Attn-{self.local_rank}: cpu handle thread, push pull done")
+                    
+                    # nvtx.range_push("ps.wait_thread")
                     ps.wait(handler, timeout_ms=60_000)
+                    # nvtx.range_pop()
+                    
                     expected_sequence += 1
                     self.ack_flag_host.fill_(signal_value)
                     logger.info(f"Attn-{self.local_rank}: cpu handle thread, update {self.ack_flag_host=}")
@@ -331,12 +350,8 @@ class StepMeshAFDConnector(AFDConnectorBase):
 
         self.layer_idx = metadata.layer_idx
         torch.ops.ps.seq_add_one(self.sequence_tensor)
-        
         torch.ops.ps.write_flag(self.signal_flag_dev, self.sequence_tensor)
         
-        
-
-
     def recv_ffn_output(
         self,
         timeout_ms: Optional[float] = None,
@@ -352,12 +367,26 @@ class StepMeshAFDConnector(AFDConnectorBase):
         if not self._initialized:
             raise RuntimeError("StepMesh connector not initialized")
         
+        # try:
+        #     torch.ops.ps.wait_flag(self.ack_flag_dev, self.sequence_tensor)
+        #     logger.info(f"Attn-{self.local_rank}: wait done {self.layer_idx=}")
+        #     stage_idx = 0
+        #     seq_len = self.send_attn_seq_len
+        #     return self.recv_buffer[stage_idx][0][:seq_len]
+        # except Exception as e:
+        #     logger.error(f"Failed to wait for FFN output: {e}")
+        #     raise RuntimeError(f"StepMesh recv_ffn_output failed: {e}") from e
+        
         try:
-            torch.ops.ps.wait_flag(self.ack_flag_dev, self.sequence_tensor)
-            logger.info(f"Attn-{self.local_rank}: wait done {self.layer_idx=}")
+            # Explicitly pass recv_buffer to the op to establish data dependency for torch.compile
             stage_idx = 0
+            recv_buf = self.recv_buffer[stage_idx][0]
+            # torch.ops.ps.wait_and_recv(self.ack_flag_dev, self.sequence_tensor, recv_buf)
+            torch.ops.ps.wait_flag(self.ack_flag_dev, self.sequence_tensor)
+
+            logger.info(f"Attn-{self.local_rank}: wait done {self.layer_idx=}")
             seq_len = self.send_attn_seq_len
-            return self.recv_buffer[stage_idx][0][:seq_len]
+            return recv_buf[:seq_len].clone()
         except Exception as e:
             logger.error(f"Failed to wait for FFN output: {e}")
             raise RuntimeError(f"StepMesh recv_ffn_output failed: {e}") from e

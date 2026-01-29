@@ -1148,9 +1148,13 @@ class DeepseekV2Model(nn.Module):
         afd_metadata: AFDMetadata,
         llama_4_scaling: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        forward_conext = get_forward_context()
+        forward_conext.attn_metadata = afd_metadata.attn_metadata_list[0]
+        forward_conext.dp_metadata = afd_metadata.dp_metadata_list[0]
         for layer in islice(self.layers, self.start_layer, self.end_layer):
             afd_connector = afd_metadata.afd_connector
-            afd_metadata.afd_stage_idx = dbo_current_ubatch_id()
+            # afd_metadata.afd_stage_idx = dbo_current_ubatch_id()
+            afd_metadata.afd_stage_idx = 0
 
             if layer.layer_idx > 0:
                 hidden_states = afd_connector.recv_ffn_output()
@@ -1158,7 +1162,6 @@ class DeepseekV2Model(nn.Module):
             current_hidden, residual = layer(
                 positions, hidden_states, residual, llama_4_scaling
             )
-            logger.info(f"jcz forward_with_afd layer_idx:{layer.layer_idx}, stage_idx:{afd_metadata.afd_stage_idx}")
             metadata = AFDConnectorMetadata.create_attention_metadata(
                 layer_idx=layer.layer_idx,
                 stage_idx=afd_metadata.afd_stage_idx,
@@ -1170,8 +1173,8 @@ class DeepseekV2Model(nn.Module):
             )
             afd_connector.send_attn_output(current_hidden, metadata)
 
-            if dbo_enabled():
-                dbo_yield()
+            # if dbo_enabled():
+            #     dbo_yield()
 
         hidden_states = afd_connector.recv_ffn_output()
 
@@ -1283,7 +1286,10 @@ class DeepseekV2Model(nn.Module):
         afd_metadata = forward_ctx.afd_metadata if forward_ctx is not None else None
 
         if afd_metadata != None:
-            hidden_states, residual = self.forward_with_afd_v2(
+            # hidden_states, residual = self.forward_with_afd_v2(
+            #     hidden_states, residual, positions, afd_metadata, llama_4_scaling
+            # )
+            hidden_states, residual = self.forward_with_afd(
                 hidden_states, residual, positions, afd_metadata, llama_4_scaling
             )
         else:
