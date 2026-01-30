@@ -221,6 +221,7 @@ class StepMeshAFDConnector(AFDConnectorBase):
         logger.info(
             f"{self.afd_config.afd_role}: {self.max_num_tokens=}, {self.num_recv_times=}"
         )
+        self.dp_metadata_list: dict[int, DPMetadata] = {}
 
         # StepMesh environment setup
         self._setup_stepmesh_env()
@@ -412,6 +413,23 @@ class StepMeshAFDConnector(AFDConnectorBase):
         """
         if not self._initialized:
             raise RuntimeError("StepMesh connector not initialized")
+        
+        if self.config.parallel_config.data_parallel_size > 1:
+            logger.info(
+                f"FFN-{self.local_rank}: data parallel size > 1, setup dp metadata"
+            )
+            for stage_idx in range(1):
+                num_tokens_per_ubatch = 256
+                self.dp_metadata_list[stage_idx] = DPMetadata.make(
+                    self.config.parallel_config,
+                    num_tokens_per_ubatch,
+                    torch.tensor(
+                        [num_tokens_per_ubatch]
+                        * self.config.parallel_config.data_parallel_size,
+                        device="cpu",
+                        dtype=torch.int32,
+                    ),
+                )
 
         try:
             # batches = self.signal.get_batch() # type: ignore
