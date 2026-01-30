@@ -303,10 +303,6 @@ class AFDMetadata:
     afd_connector: "AFDConnectorBase"
     afd_tokens_lens: list[int]  # padded lengths for tensor slicing
     num_of_stages: int
-    comm_stream1: torch.npu.Stream
-    comm_stream2: torch.npu.Stream
-    comm_stream1_event: torch.npu.ExternalEvent
-    comm_stream2_event: torch.npu.ExternalEvent
 
 
 @dataclass
@@ -338,6 +334,8 @@ class ForwardContext:
     num_ubatches: int = 1
     # TODO(yxj):to support different afdconnector
     cam_afdconnector_data: Optional[Any] = None
+    comm_event:torch.npu.Event = torch.npu.Event()
+    comm_stream: torch.npu.Stream = None
 
     def __post_init__(self):
         assert self.cudagraph_runtime_mode in [
