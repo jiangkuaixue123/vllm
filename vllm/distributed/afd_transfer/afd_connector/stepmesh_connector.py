@@ -200,14 +200,14 @@ class StepMeshAFDConnector(AFDConnectorBase):
                     
                     # Use NVTX to trace this operation in the background thread
                     # nvtx.range_push("ps.push_pull_thread")
-                    with torch.cuda.stream(self.comm_stream):
-                        handler = ps.push_pull(
-                            send_buff,
-                            send_key,
-                            recv_buff,
-                            recv_key,
-                            need_event=False,
-                        )
+                    # with torch.cuda.stream(self.comm_stream):
+                    handler = ps.push_pull(
+                        send_buff,
+                        send_key,
+                        recv_buff,
+                        recv_key,
+                        need_event=False,
+                    )
                     # nvtx.range_pop()
                     
                     logger.info(f"Attn-{self.local_rank}: cpu handle thread, push pull done")
