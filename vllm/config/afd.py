@@ -48,7 +48,7 @@ class AFDConfig:
     compute_gate_on_attention: bool = False
     """Whether to compute the gate on the attention side."""
 
-    multistream_info: dict[str, Any] = field(default_factory=dict)
+    multistream_info: dict[str, Any] = field(default_factory=lambda: {"enable": "False","core_num": "8"})
     """MultiStream configuration, including 1. enable flag; 2. when enabled, set core_num of communication stream."""
 
     def compute_hash(self) -> str:

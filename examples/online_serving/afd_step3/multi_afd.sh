@@ -106,7 +106,7 @@ if [ "$1" == 'attention' ]; then
 	         "afd_host": "141.61.73.131",
            "afd_port": "23961",
            "multistream_info": {
-             "enable": "True",
+             "enable": "False",
              "core_num": "8"
            }
          }' 2>&1 | tee "$APP_LOG_PATH"
@@ -139,7 +139,7 @@ else
 	         "afd_host": "141.61.73.131",
            "afd_port": "23961",
             "multistream_info": {
-             "enable": "True",
+             "enable": "False",
              "core_num": "8"
            }
          }' 2>&1 | tee "$APP_LOG_PATH"
