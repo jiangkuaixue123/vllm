@@ -104,7 +104,11 @@ if [ "$1" == 'attention' ]; then
            },
            "compute_gate_on_attention": "True",
 	         "afd_host": "141.61.73.131",
-           "afd_port": "23961"
+           "afd_port": "23961",
+           "multistream_info": {
+             "enable": "False",
+             "core_num": "8"
+           }
          }' 2>&1 | tee "$APP_LOG_PATH"
 else
     python -m vllm.entrypoints.afd_ffn_server $MODEL_PATH \
@@ -133,6 +137,10 @@ else
            },
            "compute_gate_on_attention": "True",
 	         "afd_host": "141.61.73.131",
-           "afd_port": "23961"
+           "afd_port": "23961",
+            "multistream_info": {
+             "enable": "False",
+             "core_num": "8"
+           }
          }' 2>&1 | tee "$APP_LOG_PATH"
 fi

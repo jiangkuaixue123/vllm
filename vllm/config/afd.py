@@ -48,6 +48,9 @@ class AFDConfig:
     compute_gate_on_attention: bool = False
     """Whether to compute the gate on the attention side."""
 
+    multistream_info: dict[str, Any] = field(default_factory=lambda: {"enable": "False","core_num": "8"})
+    """MultiStream configuration, including 1. enable flag; 2. when enabled, set core_num of communication stream."""
+
     def compute_hash(self) -> str:
         """
         WARNING: Whenever a new field is added to this config,
@@ -80,3 +83,8 @@ class AFDConfig:
     def is_ffn_server(self) -> bool:
         """Check if this instance is configured as an FFN server."""
         return self.afd_role == "ffn"
+
+    @property
+    def is_multistream(self) -> bool:
+        """Check if multistream is enabled"""
+        return self.multistream_info["enable"] == "True"

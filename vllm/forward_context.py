@@ -334,6 +334,8 @@ class ForwardContext:
     num_ubatches: int = 1
     # TODO(yxj):to support different afdconnector
     cam_afdconnector_data: Optional[Any] = None
+    afd_comm_event: Optional[Any] = None
+    afd_comm_stream: Optional[Any] = None
 
     def __post_init__(self):
         assert self.cudagraph_runtime_mode in [
