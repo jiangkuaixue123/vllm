@@ -5,6 +5,7 @@
 import importlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING
+from importlib.metadata import entry_points
 
 from vllm.logger import init_logger
 
@@ -88,26 +89,17 @@ class AFDConnectorFactory:
             return
         cls._plugins_loaded = True
 
-        import sys
-        if sys.version_info < (3, 10):
-            from importlib.metadata import entry_points
-            eps = entry_points()
-            if "vllm.afd_connectors" in eps:
-                plugin_eps = eps["vllm.afd_connectors"]
-            else:
-                plugin_eps = []
-        else:
-            from importlib.metadata import entry_points
-            plugin_eps = entry_points(group="vllm.afd_connectors")
+        plugin_eps = entry_points(group="vllm.afd_connectors")
 
         for entry_point in plugin_eps:
             try:
                 register_func = entry_point.load()
                 register_func()
-                logger.info(f"Loaded AFD connector plugin: {entry_point.name}")
+                logger.info("Loaded AFD connector plugin: %s", entry_point.name)
             except Exception as e:
                 logger.warning(
-                    f"Failed to load AFD connector plugin {entry_point.name}: {e}"
+                    "Failed to load AFD connector plugin %s: %s",
+                    entry_point.name, e
                 )
 
 

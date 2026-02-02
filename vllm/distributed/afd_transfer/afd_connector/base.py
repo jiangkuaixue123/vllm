@@ -73,12 +73,13 @@ class AFDConnectorBase(ABC):
         """Get the local rank of this connector."""
         return getattr(self, "local_rank", 0)
 
-    def configure_metadata(self, metadata: Optional["AFDConnectorMetadata"], **kwargs) -> None:
+    def configure_metadata(self, metadata: Optional["AFDConnectorMetadata"],
+                           **kwargs) -> None:
         """
         Allow connector to inject specific data into metadata.
         Base implementation does nothing.
         """
-        pass
+        return None
 
     @abstractmethod
     def send_attn_output(

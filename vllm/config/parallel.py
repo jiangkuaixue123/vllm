@@ -338,14 +338,6 @@ class ParallelConfig:
     def num_ubatches(self) -> int:
         return 2 if self.enable_dbo else self.ubatch_size
 
-    @property
-    def use_ubatching(self) -> bool:
-        return self.enable_dbo or self.ubatch_size > 1
-
-    @property
-    def num_ubatches(self) -> int:
-        return 2 if self.enable_dbo else self.ubatch_size
-
     def get_next_dp_init_port(self) -> int:
         """
         We might need to initialize process groups in multiple

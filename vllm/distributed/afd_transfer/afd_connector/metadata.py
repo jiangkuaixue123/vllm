@@ -37,8 +37,9 @@ class AFDRecvHandle(ABC):
         raise NotImplementedError
 
 
-class AFDConnectorData(ABC):
+class AFDConnectorData:
     """Base class for connector-specific metadata objects."""
+    pass
 
 
 @dataclass
