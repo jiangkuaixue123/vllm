@@ -1101,6 +1101,14 @@ class Step3VLForConditionalGeneration(nn.Module, SupportsMultiModal, SupportsPP)
             handle_oov_mm_token=handle_oov_mm_token,
         )
 
+    def set_graph_capture_mode(self, enabled: bool) -> None:
+        self.language_model.model.set_graph_capture_mode(enabled)
+
+    def compute_ffn_output(self, layer_idx: int,
+                           hidden_states: torch.Tensor) -> torch.Tensor:
+        return self.language_model.model.compute_ffn_output(
+            layer_idx, hidden_states)
+
     def forward(
         self,
         input_ids: torch.Tensor,

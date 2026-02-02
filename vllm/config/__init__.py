@@ -11,6 +11,7 @@ from vllm.config.compilation import (
     PassConfig,
 )
 from vllm.config.device import DeviceConfig
+from vllm.config.afd import AFDConfig
 from vllm.config.ec_transfer import ECTransferConfig
 from vllm.config.kv_events import KVEventsConfig
 from vllm.config.kv_transfer import KVTransferConfig

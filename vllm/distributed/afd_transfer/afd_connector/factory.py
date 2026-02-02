@@ -18,9 +18,11 @@ logger = init_logger(__name__)
 
 class AFDConnectorFactory:
     _registry: dict[str, Callable[[], type[AFDConnectorBase]]] = {}
+    _plugins_loaded: bool = False
 
     @classmethod
-    def register_connector(cls, name: str, module_path: str, class_name: str) -> None:
+    def register_connector(cls, name: str, module_path: str,
+                           class_name: str) -> None:
         """Register a connector with a lazy-loading module and class name."""
         if name in cls._registry:
             raise ValueError(f"Connector '{name}' is already registered.")
@@ -49,6 +51,7 @@ class AFDConnectorFactory:
             ValueError: If the transport backend is not supported
             ImportError: If required dependencies are not available
         """
+        cls.load_plugins()
         afd_config = config.afd_config
         connector_name = afd_config.afd_connector
 
@@ -72,24 +75,54 @@ class AFDConnectorFactory:
         Raises:
             ValueError: If the connector name is not supported
         """
+        cls.load_plugins()
         if connector_name not in cls._registry:
             raise ValueError(f"Unsupported connector type: {connector_name}")
 
         return cls._registry[connector_name]()
 
+    @classmethod
+    def load_plugins(cls):
+        """Load connectors from entry points."""
+        if cls._plugins_loaded:
+            return
+        cls._plugins_loaded = True
+
+        import sys
+        if sys.version_info < (3, 10):
+            from importlib.metadata import entry_points
+            eps = entry_points()
+            if "vllm.afd_connectors" in eps:
+                plugin_eps = eps["vllm.afd_connectors"]
+            else:
+                plugin_eps = []
+        else:
+            from importlib.metadata import entry_points
+            plugin_eps = entry_points(group="vllm.afd_connectors")
+
+        for entry_point in plugin_eps:
+            try:
+                register_func = entry_point.load()
+                register_func()
+                logger.info(f"Loaded AFD connector plugin: {entry_point.name}")
+            except Exception as e:
+                logger.warning(
+                    f"Failed to load AFD connector plugin {entry_point.name}: {e}"
+                )
+
 
 # Register various connectors here.
 # The registration should not be done in each individual file, as we want to
 # only load the files corresponding to the current connector.
+AFDConnectorFactory.register_connector(
+    "stepmesh",
+    "vllm.distributed.afd_transfer.afd_connector.stepmesh_connector",
+    "StepMeshAFDConnector")
 
 AFDConnectorFactory.register_connector(
-    "dummy",
-    "vllm.distributed.afd_transfer.afd_connector.dummy_connector",
-    "DummyAFDConnector",
-)
+    "dummy", "vllm.distributed.afd_transfer.afd_connector.dummy_connector",
+    "DummyAFDConnector")
 
 AFDConnectorFactory.register_connector(
-    "p2pconnector",
-    "vllm.distributed.afd_transfer.afd_connector.p2p_connector",
-    "P2PAFDConnector",
-)
+    "p2pconnector", "vllm.distributed.afd_transfer.afd_connector.p2p_connector",
+    "P2PAFDConnector")

@@ -169,6 +169,9 @@ class ParallelConfig:
     prefills. If the number of tokens in the request is greater than this
     threshold, microbatching will be used. Otherwise, the request will be
     processed in a single batch."""
+    disable_nccl_for_dp_synchronization: bool = False
+    """Forces the dp synchronization logic in vllm/v1/worker/dp_utils.py 
+    to use Gloo instead of NCCL for its all reduce"""
 
     disable_nccl_for_dp_synchronization: bool = False
     """Forces the dp synchronization logic in vllm/v1/worker/dp_utils.py 
@@ -326,6 +329,14 @@ class ParallelConfig:
         """world_size_across_dp is TPxPPxDP, it is the size of the world
         including data parallelism."""
         return self.world_size * self.data_parallel_size
+    
+    @property
+    def use_ubatching(self) -> bool:
+        return self.enable_dbo or self.ubatch_size > 1
+
+    @property
+    def num_ubatches(self) -> int:
+        return 2 if self.enable_dbo else self.ubatch_size
 
     @property
     def use_ubatching(self) -> bool:
