@@ -84,6 +84,7 @@ class SharedStorageConnector(KVConnectorBase_V1):
         self._block_size = vllm_config.cache_config.block_size
         self._requests_need_load: dict[str, Request] = {}
         transfer_config = vllm_config.kv_transfer_config
+        self.afd_config = vllm_config.afd_config
         self._storage_path = transfer_config.get_from_extra_config(
             "shared_storage_path", "/tmp")
         logger.info(vllm_config.kv_transfer_config)
@@ -102,6 +103,11 @@ class SharedStorageConnector(KVConnectorBase_V1):
             The number of elements in kv_caches and layer_names should be 
             the same.
         """
+        if (self.afd_config is not None
+                and self.afd_config.afd_extra_config is not None
+                and self.afd_config.afd_extra_config.get("decode_only") is not None
+                and self.afd_config.afd_extra_config.get("decode_only")) :
+            return
         attn_metadata = forward_context.attn_metadata
 
         def inject_kv_into_layer(
@@ -260,6 +266,11 @@ class SharedStorageConnector(KVConnectorBase_V1):
         # NOTE: in current v1 scheduler, the num_computed_tokens is aligned
         # with the block granularity. And it expects the returned blocks and
         # num_computed_tokens to also be aligned with the block granularity.
+        if (self.afd_config is not None
+                and self.afd_config.afd_extra_config is not None
+                and self.afd_config.afd_extra_config.get("decode_only") is not None
+                and self.afd_config.afd_extra_config.get("decode_only")):
+            return len(request.prompt_token_ids) - 1, False
         if not self._found_match_for_request(request):
             return 0, False
 
