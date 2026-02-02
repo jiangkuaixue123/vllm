@@ -128,7 +128,6 @@ class StepMeshAFDConnector(AFDConnectorBase):
         if self.afd_config.afd_role == "attention":
             self.events: deque = deque(maxlen=self.num_stages)
             self.max_num_tokens = config.scheduler_config.max_num_batched_tokens
-            self.comm_stream = torch.cuda.Stream()
             self.recv_buffer: list[list[torch.Tensor]] = [
                 [
                     torch.empty(
@@ -187,14 +186,13 @@ class StepMeshAFDConnector(AFDConnectorBase):
                     send_buff = [self.send_buffer[stage_id][:seq_len]]
                     send_key = [stage_id + node_rank_offset]
                     logger.info(f"Attn-{self.local_rank}: cpu handle thread, push pull start, {signal_value=}")
-                    with torch.cuda.stream(self.comm_stream):
-                        handler = ps.push_pull(
-                            send_buff,
-                            send_key,
-                            recv_buff,
-                            recv_key,
-                            need_event=False,
-                        )
+                    handler = ps.push_pull(
+                        send_buff,
+                        send_key,
+                        recv_buff,
+                        recv_key,
+                        need_event=False,
+                    )
                     logger.info(f"Attn-{self.local_rank}: cpu handle thread, push pull done")
                     ps.wait(handler, timeout_ms=60_000)
                     expected_sequence += 1
