@@ -126,7 +126,6 @@ class StepMeshAFDConnector(AFDConnectorBase):
         logger.info(f"{rank=}, {local_rank=}, {self.afd_config=}, {self.world_size=}")
 
         if self.afd_config.afd_role == "attention":
-            self.events: deque = deque(maxlen=self.num_stages)
             self.max_num_tokens = config.scheduler_config.max_num_batched_tokens
             self.recv_buffer: list[list[torch.Tensor]] = [
                 [
@@ -202,7 +201,6 @@ class StepMeshAFDConnector(AFDConnectorBase):
             self.send_attn_output_thread = threading.Thread(
                 target=cpu_handle_thread, name="send_attn_output_thread"
             )
-            self.send_events = [torch.cuda.Event() for _ in range(27)]
             logger.info(f"Attn-{self.local_rank}: send attn output thread start")
             self.send_attn_output_thread.start()
         else:
@@ -273,9 +271,6 @@ class StepMeshAFDConnector(AFDConnectorBase):
             logger.info(f"+++++Start init ps. {self.rank}")
             ps.init()
             logger.info(f"----Finish init ps. {self.rank}")
-
-            # self.signal = ps.SimpleNotify()
-            # self.signal.init() # type: ignore
 
             self._initialized = True
             logger.info(
