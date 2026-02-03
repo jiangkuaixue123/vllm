@@ -325,7 +325,7 @@ class StepMeshAFDConnector(AFDConnectorBase):
             raise ValueError("Attention side should have single sequence")
 
         self.send_attn_seq_len = metadata.seq_lens[0]
-        self.send_buffer[0][:self.send_attn_seq_len].copy_(hidden_states[:self.send_attn_seq_len], non_blocking=True)
+        self.send_buffer[0][:self.send_attn_seq_len].copy_(hidden_states[:self.send_attn_seq_len])
 
         self.layer_idx = metadata.layer_idx
         torch.ops.ps.seq_add_one(self.sequence_tensor)
