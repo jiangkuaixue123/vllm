@@ -1979,7 +1979,7 @@ class DeepseekV2ForCausalLM(
 
             if (self.afd_role == "ffn" and
                     self.afd_config.compute_gate_on_attention and
-                    "mlp.gate.weight" in name):
+                    ("mlp.gate.weight" in name or "mlp.gate.e_score_correction_bias" in name)):
                 continue
 
             spec_layer = get_spec_layer_idx_from_weight_name(self.config, name)
