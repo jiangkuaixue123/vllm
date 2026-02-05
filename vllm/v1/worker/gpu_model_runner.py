@@ -716,7 +716,7 @@ class GPUModelRunner(
                 torch.profiler.ProfilerActivity.CUDA,
             ],
             schedule=torch.profiler.schedule(
-                wait=6000 + 4000, warmup=1, active=30, repeat=1
+                wait=1000, warmup=1, active=10, repeat=1
             ),
             on_trace_ready=torch.profiler.tensorboard_trace_handler(profile_dir),
             record_shapes=True,
@@ -5055,25 +5055,16 @@ class GPUModelRunner(
                 # different from the case where `FULL` implies capture
                 # attention while `PIECEWISE` implies no attention.
                 force_attention = cudagraph_runtime_mode == CUDAGraphMode.FULL
-                with torch.profiler.profile(
-                    activities=[
-                        torch.profiler.ProfilerActivity.CPU,
-                        torch.profiler.ProfilerActivity.CUDA,
-                    ],
-                    on_trace_ready=torch.profiler.tensorboard_trace_handler('./log/warmup_trace'),
-                    record_shapes=True,
-                    with_stack=True
-                ) as prof:
-                    self._dummy_run(
-                        num_tokens,
-                        cudagraph_runtime_mode=CUDAGraphMode.NONE,
-                        force_attention=force_attention,
-                        uniform_decode=uniform_decode,
-                        allow_microbatching=allow_microbatching,
-                        skip_eplb=True,
-                        remove_lora=False,
-                        activate_lora=activate_lora,
-                    )
+                self._dummy_run(
+                    num_tokens,
+                    cudagraph_runtime_mode=CUDAGraphMode.NONE,
+                    force_attention=force_attention,
+                    uniform_decode=uniform_decode,
+                    allow_microbatching=allow_microbatching,
+                    skip_eplb=True,
+                    remove_lora=False,
+                    activate_lora=activate_lora,
+                )
             self._dummy_run(
                 num_tokens,
                 cudagraph_runtime_mode=cudagraph_runtime_mode,
