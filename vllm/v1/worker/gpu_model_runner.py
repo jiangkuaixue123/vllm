@@ -561,6 +561,9 @@ class GPUModelRunner(
             )
             self.afd_connector.init_afd_connector()
             self.num_stages = self.afd_config.num_afd_stages
+            logger.info(f"init afd_connector successfully")
+        else:
+            self.afd_connector = None
 
         self.kv_sharing_fast_prefill_eligible_layers: set[str] = set()
 

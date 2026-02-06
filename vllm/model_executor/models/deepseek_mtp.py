@@ -187,6 +187,8 @@ class DeepSeekMTP(nn.Module, SupportsPP, DeepseekV2MixtureOfExperts):
         self.model = DeepSeekMultiTokenPredictor(
             vllm_config=vllm_config, prefix=maybe_prefix(prefix, "model")
         )
+        self.speculative_config = vllm_config.speculative_config
+        self.afd_config = vllm_config.afd_config
         # Set MoE hyperparameters
         self.set_moe_parameters()
 
@@ -210,6 +212,10 @@ class DeepSeekMTP(nn.Module, SupportsPP, DeepseekV2MixtureOfExperts):
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.embed_input_ids(input_ids)
+
+        self.model = DeepSeekMultiTokenPredictor(vllm_config=vllm_config,
+                                                 prefix=maybe_prefix(
+                                                     prefix, "model"))
 
     def forward(
         self,
@@ -443,4 +449,10 @@ class DeepSeekMTP(nn.Module, SupportsPP, DeepseekV2MixtureOfExperts):
         elif shared_weight:
             # treat shared weights as top level weights
             name = name.replace(f"model.layers.{spec_layer}.", "model.")
+
+        # 将 mlp.gate 映射到 gate
+        if getattr(self.speculative_config, 'method', None) and self.afd_config:
+            if ".mtp_block.mlp.gate." in name:
+                name = name.replace(".mtp_block.mlp.gate.", ".mtp_block.gate.")
+
         return name

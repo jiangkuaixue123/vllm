@@ -1089,10 +1089,6 @@ def init_afd_process_group(
     return pg
 
 
-_WORLD: GroupCoordinator | None = None
-_NODE_COUNT: int | None = None
-
-
 def get_world_group() -> GroupCoordinator:
     assert _WORLD is not None, "world group is not initialized"
     return _WORLD
@@ -1133,7 +1129,13 @@ def init_model_parallel_group(
     )
 
 
-_TP: GroupCoordinator | None = None
+_SUB_TP = 0
+
+def set_substitute_tp(sub_tp: int):
+    global _SUB_TP
+    _SUB_TP = sub_tp
+
+_TP: Optional[GroupCoordinator] = None
 
 
 def get_tp_group() -> GroupCoordinator:
@@ -1580,11 +1582,15 @@ def patch_tensor_parallel_group(tp_group: GroupCoordinator):
 
 
 def get_tensor_model_parallel_world_size():
+    if _SUB_TP != 0:
+        return _SUB_TP
     """Return world size for the tensor model parallel group."""
     return get_tp_group().world_size
 
 
 def get_tensor_model_parallel_rank():
+    if _SUB_TP != 0:
+        return (get_tp_group().rank_in_group % _SUB_TP)
     """Return my rank for the tensor model parallel group."""
     return get_tp_group().rank_in_group
 

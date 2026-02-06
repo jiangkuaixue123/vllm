@@ -4,59 +4,101 @@
 FFN workers."""
 
 import time
-import typing
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Optional
 
 import torch
 
+from abc import ABC, abstractmethod
 
-class FFNNeedForwardData:
-    def __init__(
-        self,
-        moe_comm_method: typing.Any,
-        num_input_tokens: int,
-        with_prefill: bool,
-        total_num_scheduled_tokens: int | None,
-        is_dummy_run: bool = False,
-    ):
-        self.moe_comm_method = moe_comm_method
-        self.num_input_tokens = num_input_tokens
-        self.with_prefill = with_prefill
-        self.total_num_scheduled_tokens = total_num_scheduled_tokens
-        self.is_dummy_run = is_dummy_run
+
+class AFDRecvHandle(ABC):
+    """
+    Abstract base class for AFD receive handles.
+
+    This provides a handle interface for managing asynchronous AFD operations,
+    allowing waiting for completion of data transfer operations.
+    """
+    @abstractmethod
+    def __init__(self, handle: Any):
+        """Initialize the AFD receive handle.
+
+        Args:
+            handle: Backend-specific handle object
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def wait(self):
+        """Wait for the operation associated with this handle to complete.
+
+        Blocks until the data transfer or computation is finished.
+        """
+        raise NotImplementedError
+
+
+class AFDConnectorData:
+    """Base class for connector-specific metadata objects."""
+    pass
+
+
+@dataclass
+class AFDRecvOutput:
+    """Standardized output for recv_attn_output across all connectors."""
+    hidden_states: torch.Tensor
+    metadata: Optional[Any] = None  # AFDConnectorMetadata
+
+    # Common / Shared fields
+    topk_weights: Optional[torch.Tensor] = None
+    topk_ids: Optional[torch.Tensor] = None
+    dynamic_scales: Optional[torch.Tensor] = None
+    group_list: Optional[torch.Tensor] = None
+
+    # M2N specific
+    handle: Optional[Any] = None
+
+    # P2P specific
+    router_logits: Optional[torch.Tensor] = None
+    row_idx: Optional[torch.Tensor] = None
+
+    # CAM specific fields (mapped from raw lists)
+    expand_idx: Optional[torch.Tensor] = None
+    ep_recv_counts: Optional[torch.Tensor] = None
+    atten_batch_size: Optional[torch.Tensor] = None
+    x_active_mask: Optional[torch.Tensor] = None
+    cam_p2p_ep_name: Optional[str] = None
 
 
 @dataclass
 class AFDConnectorMetadata:
     """Lightweight AFD metadata containing core information needed for
     communication."""
-
     layer_idx: int
     stage_idx: int
-    seq_lens: list[int]  # Length of each sequence, supports variable length and
+    seq_lens: list[
+        int]  # Length of each sequence, supports variable length and
     # multiple sequences
     dtype: torch.dtype
     device: torch.device
-    topk_idx: torch.Tensor | None = None  # indices token which expert to be sended
-    topk_weights: torch.Tensor | None = None  # the expert weights
-    moe_expert_num: int | None = None  # number of moe experts
-    shared_expert_num: int | None = None  # number of share experts
-    scale: torch.Tensor | None = None  #  quant scale
-    expertTokenNumsOut: torch.Tensor | None = (
-        None  # The number of tokens received by each expert is used as input for the subsequent GMM.
-    )
-    recv_handle_list: list[Any] | None = (
-        None  # the communication handles (list of Work objects returned by torch.distributed.irecv)
-    )
+    num_ubatches: int = 1
+
+    # Generic field for connector-specific data
+    connector_data: Optional["AFDConnectorData"] = None
+
+    topk_idx: Optional[torch.Tensor] = None # indices token which expert to be sended
+    topk_weights: Optional[torch.Tensor] = None # the expert weights
+    topk_ids: Optional[torch.Tensor] = None
+    row_idx: Optional[torch.Tensor] = None
+    moe_expert_num: Optional[int] = None # number of moe experts
+    shared_expert_num: Optional[int] = None # number of share experts
+    scale: Optional[torch.Tensor] = None #  quant scale
+    expertTokenNumsOut: Optional[torch.Tensor] = None # The number of tokens received by each expert is used as input for the subsequent GMM.
+    send_handle_list: Optional[list[Any]] = None # the communication handles (list of Work objects returned by torch.distributed.isend)
+    recv_handle_list: Optional[list[Any]] = None # the communication handles (list of Work objects returned by torch.distributed.irecv)
 
     # Optional fields for debugging and extensibility
-    request_id: str | None = None
-    timestamp: float | None = None
-    """ffn need forward data"""
-    ffn_need_forward_data: FFNNeedForwardData | None = None
-    num_of_stages: int = 1
-    afd_tokens_lens: list = field(default_factory=list)
+    request_id: Optional[str] = None
+    timestamp: Optional[float] = None
 
     def __post_init__(self):
         """Validate data consistency."""
@@ -87,41 +129,44 @@ class AFDConnectorMetadata:
 
     @classmethod
     def create_attention_metadata(
-        cls,
-        layer_idx: int,
-        stage_idx: int,
-        seq_len: int,
-        dtype: torch.dtype,
-        device: torch.device,
-        request_id: str | None = None,
-        ffn_need_forward_data: FFNNeedForwardData | None = None,
-        num_of_stages: int = 1,
-        afd_tokens_lens: list[int] = [],
-    ) -> "AFDConnectorMetadata":
+            cls,
+            layer_idx: int,
+            stage_idx: int,
+            seq_len: int,
+            dtype: torch.dtype,
+            device: torch.device,
+            num_ubatches: int = 1,
+            request_id: Optional[str] = None,
+            connector_data: Optional["AFDConnectorData"] = None,
+            topk_weights: Optional[torch.Tensor] = None,
+            topk_ids: Optional[torch.Tensor] = None,
+            row_idx: Optional[torch.Tensor] = None,
+            **kwargs) -> "AFDConnectorMetadata":
         """Create metadata for attention side (single sequence)."""
-        return cls(
-            layer_idx=layer_idx,
-            stage_idx=stage_idx,
-            seq_lens=[seq_len],
-            dtype=dtype,
-            device=device,
-            request_id=request_id,
-            ffn_need_forward_data=ffn_need_forward_data,
-            timestamp=time.time(),
-            num_of_stages=num_of_stages,
-            afd_tokens_lens=afd_tokens_lens,
-        )
+        return cls(layer_idx=layer_idx,
+                   stage_idx=stage_idx,
+                   seq_lens=[seq_len],
+                   dtype=dtype,
+                   device=device,
+                   num_ubatches=num_ubatches,
+                   request_id=request_id,
+                #    timestamp=time.time(),
+                   connector_data=connector_data,
+                   topk_weights=topk_weights,
+                   topk_ids=topk_ids,
+                   row_idx=row_idx,
+                #    extra_fields = extra_fields
+                   )
 
     @classmethod
     def create_ffn_metadata(
-        cls,
-        layer_idx: int,
-        stage_idx: int,
-        seq_lens: list[int],
-        dtype: torch.dtype,
-        device: torch.device,
-        request_id: str | None = None,
-    ) -> "AFDConnectorMetadata":
+            cls,
+            layer_idx: int,
+            stage_idx: int,
+            seq_lens: list[int],
+            dtype: torch.dtype,
+            device: torch.device,
+            request_id: Optional[str] = None) -> "AFDConnectorMetadata":
         """Create metadata for FFN side (multiple sequences)."""
         return cls(
             layer_idx=layer_idx,
@@ -130,8 +175,7 @@ class AFDConnectorMetadata:
             dtype=dtype,
             device=device,
             request_id=request_id,
-            timestamp=time.time(),
-        )
+            timestamp=time.time())
 
     def get_split_indices(self) -> list[int]:
         """Get tensor split indices for FFN side output splitting."""

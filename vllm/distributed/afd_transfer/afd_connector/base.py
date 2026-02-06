@@ -11,7 +11,7 @@ The class provides the four core AFD communication interfaces:
 """
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional
 
 import torch
 
@@ -73,17 +73,28 @@ class AFDConnectorBase(ABC):
         """Get the local rank of this connector."""
         return getattr(self, "local_rank", 0)
 
+    def configure_metadata(self, metadata: Optional["AFDConnectorMetadata"],
+                           **kwargs) -> None:
+        """
+        Allow connector to inject specific data into metadata.
+        Base implementation does nothing.
+        """
+        return None
+
     @abstractmethod
     def send_attn_output(
         self,
         hidden_states: torch.Tensor,
-        metadata: "AFDConnectorMetadata",
+        metadata: Optional["AFDConnectorMetadata"],
+        **kwargs
     ) -> Any:
         """Send attention output to FFN servers.
 
         Args:
             hidden_states: Attention output tensor
             metadata: AFD metadata containing layer_idx, stage_idx, seq_len info
+            **kwargs: Additional arguments required by specific connectors 
+                      (e.g. topk_weights, topk_ids, router_logits)
 
         Returns:
             Any: Handle for tracking this request (backend-specific)
@@ -93,27 +104,31 @@ class AFDConnectorBase(ABC):
     @abstractmethod
     def recv_ffn_output(
         self,
-        handle: Any,
-    ) -> torch.Tensor:
+        hidden_states: Optional[torch.Tensor] = None,
+        metadata: Optional["AFDConnectorMetadata"] = None
+    ) -> Optional[torch.Tensor]:
         """Wait for and receive FFN computation result.
 
         Args:
-            handle: Handle returned by send_attn_output()
+            hidden_states: Optional hidden states tensor (used by some connectors)
+            metadata: Optional metadata
 
         Returns:
-            torch.Tensor: FFN computation result
+            torch.Tensor: FFN computation result.
         """
         raise NotImplementedError
 
     @abstractmethod
     def recv_attn_output(
         self,
-        timeout_ms: int | None = None,
-    ) -> tuple[torch.Tensor, "AFDConnectorMetadata"]:
+        metadata: Optional["AFDConnectorMetadata"] = None,
+        **kwargs
+    ) -> Any:
         """Receive attention output from attention workers.
 
         Args:
-            timeout_ms: Optional timeout in milliseconds
+            metadata: Optional metadata
+            **kwargs: Additional arguments
 
         Returns:
             tuple: (hidden_states, metadata)
@@ -126,14 +141,65 @@ class AFDConnectorBase(ABC):
     @abstractmethod
     def send_ffn_output(
         self,
-        ffn_output: torch.Tensor,
-        metadata: "AFDConnectorMetadata",
+        hidden_states: torch.Tensor,
+        metadata: Optional["AFDConnectorMetadata"],
+        **kwargs
     ) -> None:
         """Send FFN computation result back to attention workers.
 
         Args:
-            ffn_output: Computed FFN result
+            hidden_states: Computed FFN result
             metadata: AFD metadata containing seq_lens
                       for splitting and routing info
+            **kwargs: Additional arguments
         """
         raise NotImplementedError
+
+    def compute_moe(
+        self,
+        experts: torch.nn.Module,
+        hidden_states: torch.Tensor,
+        **kwargs
+    ) -> Any:
+        """
+        Perform MoE computation via the connector (or delegate to experts).
+        Default implementation calls experts.afd_ffn_compute.
+        Connectors can override to call different methods on experts.
+        """
+        return experts.afd_ffn_compute(
+            layer=experts,
+            hidden_states=hidden_states,
+            **kwargs
+        )
+
+    def select_experts(
+        self,
+        hidden_states: torch.Tensor,
+        router_logits: torch.Tensor,
+        top_k: int,
+        use_grouped_topk: bool,
+        renormalize: bool,
+        topk_group: Optional[int] = None,
+        num_expert_group: Optional[int] = None,
+        custom_routing_function: Optional[Any] = None,
+        e_score_correction_bias: Optional[torch.Tensor] = None,
+        **kwargs
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Select experts for MoE.
+
+        Args:
+            hidden_states: Input hidden states
+            router_logits: Router logits
+            top_k: Number of experts to select
+            use_grouped_topk: Whether to use grouped topk
+            renormalize: Whether to renormalize weights
+            topk_group: Number of groups for topk
+            num_expert_group: Number of expert groups
+            custom_routing_function: Custom routing function
+            e_score_correction_bias: Bias for score correction
+
+        Returns:
+             tuple: (topk_weights, topk_ids, row_idx)
+        """
+        raise NotImplementedError("select_experts not implemented for this connector")

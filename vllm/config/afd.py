@@ -45,6 +45,9 @@ class AFDConfig:
     afd_extra_config: dict[str, Any] = field(default_factory=dict)
     """Extra configuration for specific AFD connectors."""
 
+    compute_gate_on_attention: bool = False
+    """Whether to compute the gate on the attention side."""
+
     def compute_hash(self) -> str:
         """
         WARNING: Whenever a new field is added to this config,
