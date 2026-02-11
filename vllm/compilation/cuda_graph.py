@@ -209,6 +209,7 @@ class CUDAGraphWrapper:
         batch_descriptor = forward_context.batch_descriptor
         cudagraph_runtime_mode = forward_context.cudagraph_runtime_mode
 
+        logger.info(f"jcz CUDAGraphWrapper 1")
         if (
             cudagraph_runtime_mode == CUDAGraphMode.NONE
             or cudagraph_runtime_mode != self.runtime_mode
@@ -219,6 +220,7 @@ class CUDAGraphWrapper:
             # matches. This enables properly dispatching to the correct
             # CUDAGraphWrapper when nesting multiple instances with different
             # runtime modes.
+            logger.info(f"jcz CUDAGraphWrapper 2")
             return self.runnable(*args, **kwargs)
 
         assert batch_descriptor is not None
@@ -231,6 +233,7 @@ class CUDAGraphWrapper:
         entry = self.concrete_cudagraph_entries[batch_descriptor]
 
         if entry.cudagraph is None:
+            logger.info(f"jcz CUDAGraphWrapper 3")
             if self.cudagraph_options.debug_log_enable:
                 # Since we capture cudagraph for many different shapes and
                 # capturing is fast, we don't need to log it for every
@@ -292,6 +295,7 @@ class CUDAGraphWrapper:
             # important: we need to return the output, rather than
             # the weak ref of the output, so that pytorch can correctly
             # manage the memory during cuda graph capture
+            logger.info(f"jcz CUDAGraphWrapper 5")
             return output
 
         if self.is_debugging_mode:
@@ -305,5 +309,7 @@ class CUDAGraphWrapper:
                 f"got {new_input_addresses}"
             )
 
+        logger.info(f"jcz CUDAGraphWrapper begin replay")
         entry.cudagraph.replay()
+        logger.info(f"jcz CUDAGraphWrapper end replay")
         return entry.output

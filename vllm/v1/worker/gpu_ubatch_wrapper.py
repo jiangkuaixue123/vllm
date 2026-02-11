@@ -236,13 +236,14 @@ class UBatchWrapper:
 
             # Capture the cudagraph
             cudagraph_metadata = CUDAGraphMetaData(
-                cudagraph=torch.cuda.CUDAGraph(),
+                cudagraph=torch.cuda.CUDAGraph(keep_graph=True),
                 ubatch_metadata=ubatch_metadata,
             )
             if self.graph_pool is not None:
                 set_graph_pool_id(self.graph_pool)
             else:
                 set_graph_pool_id(current_platform.graph_pool_handle())
+            cudagraph_metadata.cudagraph.enable_debug_mode()
             with torch.cuda.graph(
                 cudagraph_metadata.cudagraph,
                 stream=compute_stream,
@@ -254,6 +255,11 @@ class UBatchWrapper:
                 sorted_results = [value for position, value in sorted(results)]
                 result = torch.cat(sorted_results, dim=0)
                 cudagraph_metadata.outputs = result
+            import time
+            logger.info("jcz _capture_ubatches begin debug_dump")
+            cudagraph_metadata.cudagraph.debug_dump(f"/home/fq9hpsac/fq9hpsacuser03/attn_debug_{time.time()}")
+            logger.info("jcz _capture_ubatches end debug_dump")
+            cudagraph_metadata.cudagraph.instantiate()
             self.cudagraphs[num_tokens] = cudagraph_metadata
         return cudagraph_metadata.outputs
 
@@ -413,14 +419,14 @@ class UBatchWrapper:
             # num_tokens, we don't have a non-ubatched one. Without this
             # check, the cudagraph wrapper will try to capture a cudagraph
             # for this shape during a normal run.
-
+            logger.info(f"jcz UBatchWrapper __call__ cudagraph_runtime_mode:{cudagraph_runtime_mode}")
             if cudagraph_runtime_mode is CUDAGraphMode.FULL:
                 assert batch_descriptor is not None
                 if batch_descriptor.num_tokens in self.cudagraphs:
                     cudagraph_runtime_mode = CUDAGraphMode.NONE
 
             if cudagraph_runtime_mode in (CUDAGraphMode.NONE, CUDAGraphMode.PIECEWISE):
-                logger.info("jcz UBatchWrapper __call__ 1")
+                logger.info(f"jcz UBatchWrapper __call__ 1")
                 return self.runnable(*args, **kwargs)
             else:
                 assert self.cudagraph_wrapper is not None
