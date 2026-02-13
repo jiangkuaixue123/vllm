@@ -431,7 +431,8 @@ class UBatchWrapper:
             else:
                 assert self.cudagraph_wrapper is not None
                 logger.info("jcz UBatchWrapper __call__ 2")
-                return self.cudagraph_wrapper(*args, **kwargs)
+                # return self.cudagraph_wrapper(*args, **kwargs)
+                return self.runnable(*args, **kwargs)
 
         num_tokens = sum(
             ubatch_slice.num_tokens
@@ -472,7 +473,8 @@ class UBatchWrapper:
             )
             with self.sm_control:
                 logger.info("jcz UBatchWrapper __call__ 3")
-                return self._capture_ubatches(ubatch_metadata, self.model)
+                # return self._capture_ubatches(ubatch_metadata, self.model)
+                return self._run_ubatches(ubatch_metadata, self.model)
         elif (
             num_tokens in self.cudagraphs
             and cudagraph_runtime_mode is CUDAGraphMode.FULL
