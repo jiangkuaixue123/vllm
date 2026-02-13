@@ -1350,9 +1350,6 @@ class DeepseekV2DecoderLayer(nn.Module):
 
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
-        if self.afd_role == "attention":
-            return hidden_states, residual
-
         hidden_states = self.mlp(hidden_states)
 
         if isinstance(self.mlp, DeepseekV2MLP) and hidden_states.dtype == torch.float16:
@@ -1386,10 +1383,7 @@ class DeepseekV2DecoderLayer(nn.Module):
             attn_kwargs["llama_4_scaling"] = llama_4_scaling
         hidden_states = self.self_attn(**attn_kwargs)
 
-        if (
-                not isinstance(self.self_attn, DeepseekAttention)
-                and hidden_states.dtype == torch.float16
-        ):
+        if hidden_states.dtype == torch.float16:
             # Fix FP16 overflow
             # We scale both hidden_states and residual before
             # rmsnorm, and rmsnorm result would not affect by scale.
@@ -1404,7 +1398,6 @@ class DeepseekV2DecoderLayer(nn.Module):
 
         topk_weights = None
         topk_ids = None
-        row_idx = None
         # Compute gate on attention side.
         router_logits = None
         if self.layer_idx >= self.first_k_dense_replace and self.afd_config.compute_gate_on_attention:
@@ -1600,7 +1593,7 @@ class DeepseekV2Model(nn.Module):
                 connector_data=None,
             )
 
-            afd_connector.configure_metadata(metadata, config=self.config, batch_size=hidden_states.shape[0])
+            afd_connector.configure_metadata(metadata, config=self.config, batch_size=self.max_num_reqs)
 
             [hidden_states, send_attn_handle] = afd_connector.send_attn_output(
                 hidden_states=current_hidden,
