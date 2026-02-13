@@ -1189,6 +1189,8 @@ class DeepseekV2DecoderLayer(nn.Module):
         parallel_config = vllm_config.parallel_config
 
         self.afd_config = vllm_config.afd_config
+        self.vllm_config = vllm_config
+        self.config = config
         self.afd_role = self.afd_config.afd_role if self.afd_config is not None else None
         self.connector_name = self.afd_config.afd_connector if self.afd_config is not None else None
         self.top_k = getattr(config, 'num_experts_per_tok', 8)
@@ -1409,6 +1411,16 @@ class DeepseekV2DecoderLayer(nn.Module):
                 afd_connector = forward_ctx.afd_metadata.afd_connector
 
             if afd_connector:
+
+                # adapt top9
+                mix_placement = self.vllm_config.additional_config.get("mix_placement", False)
+                num_redundant_experts = self.vllm_config.parallel_config.eplb_config.num_redundant_experts
+                if mix_placement:
+                    global_num_experts = self.config.n_shared_experts + self.config.n_routed_experts + \
+                                         num_redundant_experts
+                else:
+                    global_num_experts = self.config.n_routed_experts + num_redundant_experts
+
                 topk_weights, topk_ids = afd_connector.select_experts(
                     hidden_states=hidden_states,
                     router_logits=router_logits,
@@ -1416,6 +1428,10 @@ class DeepseekV2DecoderLayer(nn.Module):
                     use_grouped_topk=False,
                     renormalize=True,
                     e_score_correction_bias=self.gate.e_score_correction_bias,
+                    mix_placement=mix_placement,
+                    num_logical_experts=router_logits.shape[1],
+                    num_shared_experts=self.config.n_shared_experts,
+                    global_num_experts=global_num_experts
                 )
             else:
                 raise RuntimeError("AFD connector required for compute_gate_on_attention but not found in context.")
