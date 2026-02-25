@@ -1618,7 +1618,8 @@ class DeepseekV2Model(nn.Module):
                 metadata=metadata,
                 topk_weights=topk_weights,
                 topk_ids=topk_ids,
-                router_logits=router_logits
+                router_logits=router_logits,
+                dynamic_scales=None
             )
 
             if send_attn_handle is not None:
