@@ -21,6 +21,7 @@ from vllm.distributed.parallel_state import (
     is_global_first_rank
 )
 from vllm.forward_context import (
+    AFDMetadata,
     DPMetadata,
     set_forward_context,
     get_forward_context,
@@ -156,25 +157,33 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
         # for layer_idx in range(self.first_k_dense_replace,self.num_layers):
         for layer_idx in range(0, self.num_layers):
             for ubatch_idx in range(num_ubatches):
-                hidden_states, recv_metadata = self.connector.recv_attn_output(ubatch_idx=ubatch_idx)
-                dp_metadata = dp_metadata_list.get(
-                    recv_metadata.stage_idx, None
+                afd_metadata = AFDMetadata(
+                    afd_tokens_start_loc=None,
+                    afd_reqs_start_loc=None,
+                    afd_stage_idx=ubatch_idx,
+                    afd_connector=None,
+                    afd_tokens_lens=None,
+                    num_of_stages=num_ubatches,
                 )
-                if recv_metadata is not None and recv_metadata.recv_handle_list is not None:
-                    for work in recv_metadata.recv_handle_list:
-                        work.wait()
-                # Fallback to eager mode
                 with set_forward_context(
                     attn_metadata=None, vllm_config=self.vllm_config
                 ):
+                    get_forward_context().afd_metadata = afd_metadata
+                    hidden_states, recv_metadata = self.connector.recv_attn_output(ubatch_idx=ubatch_idx)
+                    dp_metadata = dp_metadata_list.get(
+                        recv_metadata.stage_idx, None
+                    )
+                    if recv_metadata is not None and recv_metadata.recv_handle_list is not None:
+                        for work in recv_metadata.recv_handle_list:
+                            work.wait()
+                    # Fallback to eager mode
                     print(f"jcz _ffn_forward execute_eager_mode dp_metadata:{dp_metadata} hidden_states:{hidden_states.shape}")
                     get_forward_context().dp_metadata = dp_metadata
                     rank_ffn_output = self._execute_eager_mode(
                         hidden_states, layer_idx
                     )
-
-                recv_metadata.recv_handle_list = None
-                self.connector.send_ffn_output(rank_ffn_output, recv_metadata)
+                    recv_metadata.recv_handle_list = None
+                    self.connector.send_ffn_output(rank_ffn_output, recv_metadata)
         self._execute_model_count += 1
         return rank_ffn_output
 
