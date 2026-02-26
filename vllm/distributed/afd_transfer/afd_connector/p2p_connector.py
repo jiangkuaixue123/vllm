@@ -33,36 +33,42 @@ logger = init_logger(__name__)
 # Custom Ops Registration for P2P Communication
 # -------------------------------------------------------------------------
 
-# Global registry to map integer IDs to PyNcclCommunicator objects
-# because we cannot pass complex Python objects to custom ops.
+# Global registry: stage_idx (ubatch index) -> PyNcclCommunicator for that ubatch.
+# Custom ops resolve comm via get_forward_context().afd_metadata.afd_stage_idx.
 _AFD_COMMUNICATORS: dict[int, PyNcclCommunicator] = {}
-_AFD_COMM_ID_COUNTER = 0
-
-def _register_comm(comm: PyNcclCommunicator) -> int:
-    global _AFD_COMM_ID_COUNTER
-    comm_id = _AFD_COMM_ID_COUNTER
-    _AFD_COMMUNICATORS[comm_id] = comm
-    _AFD_COMM_ID_COUNTER += 1
-    return comm_id
 
 
-def _unregister_comm(comm_id: int) -> None:
-    _AFD_COMMUNICATORS.pop(comm_id, None)
+def _register_comm_for_stage(comm: PyNcclCommunicator, stage_idx: int) -> None:
+    _AFD_COMMUNICATORS[stage_idx] = comm
+
+
+def _unregister_comm_for_stage(stage_idx: int) -> None:
+    _AFD_COMMUNICATORS.pop(stage_idx, None)
+
+
+def _get_comm_from_context() -> PyNcclCommunicator:
+    from vllm.forward_context import get_forward_context
+    ctx = get_forward_context()
+    if ctx.afd_metadata is None:
+        raise RuntimeError("afd_p2p op requires forward_context.afd_metadata to be set.")
+    stage_idx = ctx.afd_metadata.afd_stage_idx
+    comm = _AFD_COMMUNICATORS.get(stage_idx)
+    if comm is None:
+        raise RuntimeError(
+            f"AFD communicator for stage_idx={stage_idx} not found/registered."
+        )
+    return comm
 
 # --- Send Op ---
 
-def afd_p2p_send_impl(tensor: torch.Tensor, dst: int, comm_id: int) -> None:
-    comm = _AFD_COMMUNICATORS.get(comm_id)
-    if comm is None:
-        raise RuntimeError(f"Communicator with ID {comm_id} not found/registered.")
-    print(f"begin afd_p2p_send_impl tensor.shape:{tensor.shape}", flush=True)
+def afd_p2p_send_impl(tensor: torch.Tensor, dst: int) -> None:
+    comm = _get_comm_from_context()
+    ctx = get_forward_context()
+    stage_idx = ctx.afd_metadata.afd_stage_idx
+    logger.info("afd_p2p_send_impl stage_idx:%s", stage_idx)
     comm.send(tensor, dst, stream=torch.cuda.current_stream(tensor.device))
-    print("end afd_p2p_send_impl", flush=True)
-    # NOTE: Removed synchronize() to avoid deadlock when FFN side is capturing CUDA graph
-    # The stream-based send will be properly ordered with subsequent operations on the same stream
 
-def afd_p2p_send_fake(tensor: torch.Tensor, dst: int, comm_id: int) -> None:
-    print("afd_p2p_send_fake", flush=True)
+def afd_p2p_send_fake(tensor: torch.Tensor, dst: int) -> None:
     return None
 
 direct_register_custom_op(
@@ -73,26 +79,14 @@ direct_register_custom_op(
 )
 
 # --- Recv Op ---
-def afd_p2p_recv_impl(
-    out: torch.Tensor,
-    src: int,
-    comm_id: int,
-) -> None:
-    comm = _AFD_COMMUNICATORS.get(comm_id)
-    if comm is None:
-        raise RuntimeError(f"Communicator with ID {comm_id} not found/registered.")
-    print(f"begin afd_p2p_recv_impl out.shape:{out.shape}", flush=True)
+def afd_p2p_recv_impl(out: torch.Tensor, src: int) -> None:
+    comm = _get_comm_from_context()
+    ctx = get_forward_context()
+    stage_idx = ctx.afd_metadata.afd_stage_idx
+    logger.info("afd_p2p_recv_impl stage_idx:%s", stage_idx)
     comm.recv(out, src, stream=torch.cuda.current_stream(out.device))
-    print("end afd_p2p_recv_impl", flush=True)
-    # NOTE: Removed synchronize() to avoid deadlock when one side is capturing CUDA graph
-    # The stream-based recv will be properly ordered with subsequent operations on the same stream
 
-def afd_p2p_recv_fake(
-    out: torch.Tensor,
-    src: int,
-    comm_id: int,
-) -> None:
-    print("afd_p2p_recv_fake", flush=True)
+def afd_p2p_recv_fake(out: torch.Tensor, src: int) -> None:
     return None
 
 direct_register_custom_op(
@@ -137,8 +131,7 @@ class P2PAFDConnector(AFDConnectorBase):
 
         self.a2e_pynccl: PyNcclCommunicator | None = None
         self.e2a_pynccl: PyNcclCommunicator | None = None
-        self.a2e_comm_id: int | None = None
-        self.e2a_comm_id: int | None = None
+        # One comm per ubatch (stage); this rank uses comm at _ubatch_idx().
         self.ffn_size: int = 0
         self.min_size: int = 0
         self.dst_list = []
@@ -151,12 +144,8 @@ class P2PAFDConnector(AFDConnectorBase):
 
     def close(self) -> None:
         """Close the connector and release resources."""
-        if self.a2e_comm_id is not None:
-            _unregister_comm(self.a2e_comm_id)
-            self.a2e_comm_id = None
-        if self.e2a_comm_id is not None:
-            _unregister_comm(self.e2a_comm_id)
-            self.e2a_comm_id = None
+        for i in range(self.config.parallel_config.num_ubatches):
+            _unregister_comm_for_stage(i)
 
     def init_afd_connector(self) -> None:
         """Initialize the AFD connector."""
@@ -180,8 +169,9 @@ class P2PAFDConnector(AFDConnectorBase):
             timeout=timedelta(minutes=2),
         )
         logger.info(f"jcz afd_pg initialized world_rank:{self.world_rank}")
-        # Construct rank lists for sub groups.
-        # Each group contains one attention and one ffn rank.
+        # Number of ubatches is given by parallel_config (2 if DBO else ubatch_size).
+        num_ubatches = self.config.parallel_config.num_ubatches if self.config.parallel_config.num_ubatches != 0 else 1
+        # Construct rank lists for sub groups: one (ffn, attn) pair per ubatch.
         ffn_ranks = [i for i in range(ffn_size)]
         attn_ranks = [i for i in range(ffn_size, ffn_size + attn_size)]
         assert len(ffn_ranks) == len(attn_ranks), (
@@ -191,14 +181,11 @@ class P2PAFDConnector(AFDConnectorBase):
         with default_pg_switcher:
             sub_group_ranks = []
             for i in range(len(ffn_ranks)):
-                # ranks = [attn_ranks[i], ffn_ranks[i]]
                 ranks = [ffn_ranks[i], attn_ranks[i]]
                 sub_group_ranks.append(ranks)
-            # Create two independent groups:
-            # a2e_group: for attention -> expert/ffn communication (send_attn, recv_attn)
-            # e2a_group: for expert/ffn -> attention communication (send_ffn, recv_ffn)
-            # The communication domain (rank range) is the same, but different group_name
-            # creates independent groups.
+            # One group per ubatch (same rank pair for A<->F); one PyNcclCommunicator
+            # per rank, registered at this rank's ubatch index (used by custom op via
+            # get_forward_context().afd_metadata.afd_stage_idx).
             logger.info("jcz before self.a2e_group")
             self.a2e_group = init_model_parallel_group(
                 sub_group_ranks,
@@ -206,26 +193,17 @@ class P2PAFDConnector(AFDConnectorBase):
                 backend="nccl",
                 group_name="a2e",
             )
-            logger.info("jcz before self.e2a_group")
-            self.e2a_group = init_model_parallel_group(
-                sub_group_ranks,
-                self.local_rank,
-                backend="nccl",
-                group_name="e2a",
-            )
-            logger.info("jcz before a2e_pynccl")
-            self.a2e_pynccl = PyNcclCommunicator(
-                group=self.a2e_group.cpu_group,
-                device=self.local_rank,
-            )
-            self.a2e_comm_id = _register_comm(self.a2e_pynccl)
-            logger.info("jcz before e2a_pynccl")
-            self.e2a_pynccl = PyNcclCommunicator(
-                group=self.e2a_group.cpu_group,
-                device=self.local_rank,
-            )
-            self.e2a_comm_id = _register_comm(self.e2a_pynccl)
-            logger.info("jcz after a2e_pynccl and e2a_pynccl")
+            logger.info("jcz after self.a2e_group")
+            self.e2a_group = self.a2e_group  # same pair for both directions
+            
+            for ubatch_idx in range(num_ubatches):
+                logger.info("jcz before _ubatch_comm ubatch_idx=%s", ubatch_idx)
+                _ubatch_comm = PyNcclCommunicator(
+                    group=self.a2e_group.cpu_group,
+                    device=self.local_rank,
+                )
+                _register_comm_for_stage(_ubatch_comm, ubatch_idx)
+                logger.info("jcz after _ubatch_comm ubatch_idx=%s", ubatch_idx)
         
         # All FFN and the first min_size Attention participate in p2p communication.
         # All FFN: world_rank in [0, ffn_size)
@@ -277,19 +255,8 @@ class P2PAFDConnector(AFDConnectorBase):
             return []
         assert dst < process_group.world_size, f"Invalid dst rank ({dst})"
         assert not hidden_states.is_cpu, "Hidden states must be on GPU"
-
-        # Try to use PyNCCL first
-        comm_id = None
-        if process_group == self.a2e_group:
-            comm_id = self.a2e_comm_id
-        elif process_group == self.e2a_group:
-            comm_id = self.e2a_comm_id
-
-        if comm_id is not None:
-            # PyNCCL uses rank in group
-            torch.ops.vllm.afd_p2p_send(hidden_states, dst, comm_id)
-        else:
-            raise RuntimeError("PyNCCL communicator is required but not available.")
+        # Comm is resolved in custom op from get_forward_context().afd_metadata.afd_stage_idx
+        torch.ops.vllm.afd_p2p_send(hidden_states, dst)
 
     def _recv_hidden_states(
         self,
@@ -301,39 +268,25 @@ class P2PAFDConnector(AFDConnectorBase):
         if not torch.distributed.is_initialized() or process_group.world_size == 1:
             return {}, []
         assert src < process_group.world_size, f"Invalid src rank ({src})"
+        # Comm is resolved in custom op from get_forward_context().afd_metadata.afd_stage_idx
+        size = list(tensor_metadata.size)
+        if ref_tensor is not None:
+            size[0] = ref_tensor.shape[0]
 
-        # Try to use PyNCCL first
-        comm_id = None
-        if process_group == self.a2e_group:
-            comm_id = self.a2e_comm_id
-        elif process_group == self.e2a_group:
-            comm_id = self.e2a_comm_id
-
-        if comm_id is not None:
-            # PyNCCL uses rank in group
-            # Use ref_tensor to capture dynamic shapes (e.g. batch size) if provided
-            size = list(tensor_metadata.size)
-            if ref_tensor is not None:
-                # Assume dimension 0 is the dynamic batch/seq_len dimension
-                size[0] = ref_tensor.shape[0]
-
-            if (
-                ref_tensor is not None
-                and ref_tensor.shape == tuple(size)
-                and ref_tensor.dtype == tensor_metadata.dtype
-                and ref_tensor.device == tensor_metadata.device
-            ):
-                hidden_states = ref_tensor
-            else:
-                # Note: If using cudagraph, this branch should not be taken
-                hidden_states = torch.empty(
-                    tuple(size),
-                    dtype=tensor_metadata.dtype,
-                    device=tensor_metadata.device,
-                )
-            torch.ops.vllm.afd_p2p_recv(hidden_states, src, comm_id)
+        if (
+            ref_tensor is not None
+            and ref_tensor.shape == tuple(size)
+            and ref_tensor.dtype == tensor_metadata.dtype
+            and ref_tensor.device == tensor_metadata.device
+        ):
+            hidden_states = ref_tensor
         else:
-            raise RuntimeError("PyNCCL communicator is required but not available.")
+            hidden_states = torch.empty(
+                tuple(size),
+                dtype=tensor_metadata.dtype,
+                device=tensor_metadata.device,
+            )
+        torch.ops.vllm.afd_p2p_recv(hidden_states, src)
         return hidden_states
     
     def update_state_from_dp_metadata(

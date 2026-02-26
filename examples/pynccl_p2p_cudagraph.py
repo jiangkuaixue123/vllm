@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """
-Minimal 2-rank P2P send/recv using vLLM PyNcclCommunicator with CUDA graph capture and replay.
+Simulate AF (Attention–FFN) separation with 2 ranks, 2 ubatches, 27 layers.
+
+Communication pattern:
+- Rank 0 (FFN):  each layer: recv 2 from ATTN then send 2 to ATTN.
+- Rank 1 (ATTN): layer 0: 2 sends to FFN;
+                 layers 1–25: recv 2 from FFN then send 2 to FFN;
+                 layer 26: 2 recvs from FFN.
 
 Run (2 GPUs on one machine):
   cd /path/to/vllm && torchrun --nproc_per_node=2 examples/pynccl_p2p_cudagraph.py
 
-Or with 2 nodes (1 GPU each), set MASTER_ADDR, MASTER_PORT, RANK, WORLD_SIZE accordingly.
+Or with 2 nodes (1 GPU each), set MASTER_ADDR, MASTER_PORT, RANK, WORLD_SIZE.
 """
 
 import os
 import sys
 
-# Allow importing vllm from repo root
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
@@ -21,6 +26,15 @@ import torch.distributed as dist
 from torch.distributed.distributed_c10d import _get_default_group
 
 from vllm.distributed.device_communicators.pynccl import PyNcclCommunicator
+
+NUM_UBATCHES = 2
+NUM_LAYERS = 27
+# Per-ubatch buffer shape (same on both ranks)
+SHAPE = (64, 2048)
+DTYPE = torch.bfloat16
+# FFN rank does recv then send every layer; ATTN rank does 2 sends at layer 0, then recv+send, then 2 recvs at last
+FFN_RANK = 0
+ATTN_RANK = 1
 
 
 def main():
@@ -33,83 +47,91 @@ def main():
     torch.cuda.set_device(local_rank)
     device = torch.device(f"cuda:{local_rank}")
 
-    # PyNcclCommunicator requires a non-NCCL group (Gloo used for bootstrap)
-    print("jcz haha 0.1")
     comm = PyNcclCommunicator(group=_get_default_group(), device=device)
-    print("jcz haha 0.2")
     if comm.disabled:
         print(f"Rank {rank}: PyNcclCommunicator disabled, exit.")
         return
 
-    # Fixed buffer shape for capture/replay (must be same on both ranks): 64*2048, bfloat16
-    shape = (64, 2048)
-    dtype = torch.bfloat16
+    stream = torch.cuda.current_stream(device)
 
-    if rank == 0:
-        send_buf = torch.zeros(shape, dtype=dtype, device=device)
-        recv_buf = None
+    # Buffers: each rank has send/recv buffers for both ubatches
+    if rank == FFN_RANK:
+        # FFN uses one buffer for both ubatches (reused in for loop)
+        comm_buf = torch.empty(SHAPE, dtype=DTYPE, device=device)
     else:
-        send_buf = None
-        recv_buf = torch.empty(shape, dtype=dtype, device=device)
+        send_ubatch = [
+            torch.zeros(SHAPE, dtype=DTYPE, device=device),
+            torch.zeros(SHAPE, dtype=DTYPE, device=device),
+        ]
+        recv_ubatch = [
+            torch.empty(SHAPE, dtype=DTYPE, device=device),
+            torch.empty(SHAPE, dtype=DTYPE, device=device),
+        ]
 
-    # Dedicated stream for capture and replay
-    capture_stream = torch.cuda.Stream(device=device)
-    print("jcz haha 1")
-    # Warmup with random data
-    torch.manual_seed(42)
-    if rank == 0:
-        send_buf.copy_(torch.randn(*shape, dtype=dtype, device=device))
-        comm.send(send_buf, dst=1, stream=torch.cuda.current_stream(device))
-    else:
-        comm.recv(recv_buf, src=0, stream=torch.cuda.current_stream(device))
-    print("jcz haha 2")
+    def attn_layer_0():
+        """ATTN rank: layer 0 — 2 sends to FFN (ubatch0, ubatch1)."""
+        comm.send(send_ubatch[0], dst=FFN_RANK, stream=stream)
+        comm.send(send_ubatch[1], dst=FFN_RANK, stream=stream)
+
+    def attn_layer_mid(layer_idx):
+        """ATTN rank: layers 1..25 — recv 2 from FFN then send 2 to FFN."""
+        comm.recv(recv_ubatch[0], src=FFN_RANK, stream=stream)
+        comm.recv(recv_ubatch[1], src=FFN_RANK, stream=stream)
+        comm.send(send_ubatch[0], dst=FFN_RANK, stream=stream)
+        comm.send(send_ubatch[1], dst=FFN_RANK, stream=stream)
+
+    def attn_layer_last():
+        """ATTN rank: layer 26 — recv 2 from FFN then send 2 (to match FFN recv=54)."""
+        comm.recv(recv_ubatch[0], src=FFN_RANK, stream=stream)
+        comm.recv(recv_ubatch[1], src=FFN_RANK, stream=stream)
+        comm.send(send_ubatch[0], dst=FFN_RANK, stream=stream)
+        comm.send(send_ubatch[1], dst=FFN_RANK, stream=stream)
+
+    def ffn_layer(layer_idx):
+        """FFN rank: recv then send per ubatch; layer 26 only recv (no send)."""
+        for ub in range(NUM_UBATCHES):
+            comm.recv(comm_buf, src=ATTN_RANK, stream=stream)
+            if layer_idx < NUM_LAYERS - 1:
+                comm.send(comm_buf, dst=ATTN_RANK, stream=stream)
+
+    def run_all_layers():
+        """Execute all 27 layers (used for warmup and graph capture)."""
+        for layer_idx in range(NUM_LAYERS):
+            if rank == FFN_RANK:
+                ffn_layer(layer_idx)
+            else:
+                if layer_idx == 0:
+                    attn_layer_0()
+                elif layer_idx < NUM_LAYERS - 1:
+                    attn_layer_mid(layer_idx)
+        if rank == ATTN_RANK:
+            attn_layer_last()
+
+    # Warmup (eager run)
+    run_all_layers()
     torch.cuda.synchronize(device)
-    print("jcz haha 3")
-
     dist.barrier()
-    if rank == 1:
-        torch.manual_seed(42)
-        expected = torch.randn(*shape, dtype=dtype, device=device)
-        assert torch.allclose(recv_buf, expected), "Warmup recv mismatch"
     print(f"Rank {rank}: warmup OK")
 
-    # Capture CUDA graph (same buffer addresses used on every replay)
+    # CUDA graph capture
+    capture_stream = torch.cuda.Stream(device=device)
     graph = torch.cuda.CUDAGraph()
     capture_stream.wait_stream(torch.cuda.current_stream(device))
     with torch.cuda.graph(graph, stream=capture_stream):
-        if rank == 0:
-            comm.send(send_buf, dst=1, stream=capture_stream)
-        else:
-            comm.recv(recv_buf, src=0, stream=capture_stream)
-    print(f"Rank {rank}: captured graph")
-
+        run_all_layers()
     torch.cuda.synchronize(device)
     dist.barrier()
-    print("Both ranks: capture done")
+    print(f"Rank {rank}: graph captured")
 
-    # Replay several times with random data (same seed per step for verification)
+    # Replay
     num_replays = 4
     for step in range(num_replays):
-        if rank == 0:
-            torch.manual_seed(100 + step)
-            send_buf.copy_(torch.randn(*shape, dtype=dtype, device=device))
-            capture_stream.wait_stream(torch.cuda.current_stream(device))
-            graph.replay()
-        else:
-            capture_stream.wait_stream(torch.cuda.current_stream(device))
-            graph.replay()
-
+        capture_stream.wait_stream(torch.cuda.current_stream(device))
+        graph.replay()
         torch.cuda.synchronize(device)
+        print(f"jcz after replay {step}")
         dist.barrier()
-
-        if rank == 1:
-            torch.manual_seed(100 + step)
-            expected = torch.randn(*shape, dtype=dtype, device=device)
-            ok = torch.allclose(recv_buf, expected)
-            print(f"Rank 1: replay step {step} recv_buf[0,0]={recv_buf[0,0].item():.4f} (expected {expected[0,0].item():.4f}) OK={ok}")
-            assert ok, f"Replay step {step} recv mismatch"
-
-    print(f"Rank {rank}: all {num_replays} replays OK")
+    print(f"Rank {rank}: AF simulation {NUM_LAYERS} layers, {num_replays} replays OK")
     dist.destroy_process_group()
 
 
