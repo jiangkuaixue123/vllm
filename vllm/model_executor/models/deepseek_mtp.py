@@ -450,9 +450,4 @@ class DeepSeekMTP(nn.Module, SupportsPP, DeepseekV2MixtureOfExperts):
             # treat shared weights as top level weights
             name = name.replace(f"model.layers.{spec_layer}.", "model.")
 
-        # 将 mlp.gate 映射到 gate
-        if getattr(self.speculative_config, 'method', None) and self.afd_config:
-            if ".mtp_block.mlp.gate." in name:
-                name = name.replace(".mtp_block.mlp.gate.", ".mtp_block.gate.")
-
         return name
