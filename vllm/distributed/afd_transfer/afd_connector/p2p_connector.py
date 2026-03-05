@@ -474,11 +474,13 @@ class P2PAFDConnector(AFDConnectorBase):
         else:
             # Asymmetric case: slice and send to each A
             tokens_per_a = total_tokens // self.ratio
+            self.e2a_pynccl.group_start()
             for i, dst in enumerate(range(1, self.group_size)):
                 start_idx = i * tokens_per_a
                 end_idx = start_idx + tokens_per_a
                 slice_tensor = hidden_states[start_idx:end_idx]
                 self._send_hidden_states(slice_tensor, dst, self.e2a_group)
+            self.e2a_pynccl.group_end()
 
     def recv_attn_output(
         self, ubatch_idx: int = 0
@@ -497,6 +499,7 @@ class P2PAFDConnector(AFDConnectorBase):
         meta = self._tensor_metadata_list[ubatch_idx]
 
         # Receive from all A's in the subgroup (ranks 1 to group_size-1)
+        self.a2e_pynccl.group_start()
         for src in range(1, self.group_size):
             ref_tensor = None
             if not self.config.model_config.enforce_eager:
@@ -510,6 +513,7 @@ class P2PAFDConnector(AFDConnectorBase):
                 ref_tensor=ref_tensor,
             )
             hidden_states_list.append(hidden_states)
+        self.e2a_pynccl.group_end()
 
         # Concatenate all received tensors along dimension 0
         # Note: This creates a new tensor, but the recv operations are graph-safe
