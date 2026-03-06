@@ -56,7 +56,7 @@ def afd_p2p_send_impl(tensor: torch.Tensor, dst: int, comm_id: int) -> None:
     comm = _AFD_COMMUNICATORS.get(comm_id)
     if comm is None:
         raise RuntimeError(f"Communicator with ID {comm_id} not found/registered.")
-    print(f"begin afd_p2p_send_impl tensor.shape:{tensor.shape}", flush=True)
+    print(f"begin afd_p2p_send_impl tensor.shape:{tensor.shape} comm_id:{comm_id}", flush=True)
     comm.send(tensor, dst, stream=torch.cuda.current_stream(tensor.device))
     print("end afd_p2p_send_impl", flush=True)
 
@@ -219,11 +219,16 @@ class P2PAFDConnector(AFDConnectorBase):
                         f"my_sub_group_idx:{my_sub_group_idx} my_rank_in_group:{my_rank_in_group} my_group_size:{my_group_size}")
             self.a2e_group = StatelessProcessGroup.create(
                 host=afd_host,
-                port=base_port + my_sub_group_idx + 1,  # Use offset to avoid conflict with afd_pg
+                port=base_port + my_sub_group_idx + 1,  # A->F communication
                 rank=my_rank_in_group,
                 world_size=my_group_size,
             )
-            self.e2a_group = self.a2e_group  # Symmetric groups for A->F and F->A
+            self.e2a_group = StatelessProcessGroup.create(
+                host=afd_host,
+                port=base_port + 100 + my_sub_group_idx + 1,  # F->A communication, offset by ffn_size to avoid conflict
+                rank=my_rank_in_group,
+                world_size=my_group_size,
+            )
 
             # Store rank_in_group for later use in send/recv methods
             self.rank_in_group = my_rank_in_group
@@ -513,7 +518,7 @@ class P2PAFDConnector(AFDConnectorBase):
                 ref_tensor=ref_tensor,
             )
             hidden_states_list.append(hidden_states)
-        self.e2a_pynccl.group_end()
+        self.a2e_pynccl.group_end()
 
         # Concatenate all received tensors along dimension 0
         # Note: This creates a new tensor, but the recv operations are graph-safe
