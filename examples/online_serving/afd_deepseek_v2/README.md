@@ -31,6 +31,7 @@ In the D instances of PD separation, we now support the FULL_DECODE_ONLY mode of
 
   ```bash
   # When using RDMA across machines, cudagraph replay may get stuck. Please run:
+  export NCCL_NET_PLUGIN=none
   export NCCL_IB_DISABLE=1
   ```
 
