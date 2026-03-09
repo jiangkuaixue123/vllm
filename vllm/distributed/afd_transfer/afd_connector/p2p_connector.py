@@ -39,6 +39,18 @@ logger = init_logger(__name__)
 _AFD_COMMUNICATORS: dict[int, PyNcclCommunicator] = {}
 _AFD_COMM_ID_COUNTER = 0
 
+# 全局通信 stream，按 device 存储用于 send/recv
+_AFD_COMM_STREAMS: dict[int, torch.cuda.Stream] = {}
+
+
+def _get_comm_stream(device: torch.device) -> torch.cuda.Stream:
+    """获取或创建指定设备的通信 stream"""
+    device_idx = device.index if device.type == "cuda" else 0
+    if device_idx not in _AFD_COMM_STREAMS:
+        _AFD_COMM_STREAMS[device_idx] = torch.cuda.Stream(device=device_idx)
+    return _AFD_COMM_STREAMS[device_idx]
+
+
 def _register_comm(comm: PyNcclCommunicator) -> int:
     global _AFD_COMM_ID_COUNTER
     comm_id = _AFD_COMM_ID_COUNTER
@@ -56,8 +68,21 @@ def afd_p2p_send_impl(tensor: torch.Tensor, dst: int, comm_id: int) -> None:
     comm = _AFD_COMMUNICATORS.get(comm_id)
     if comm is None:
         raise RuntimeError(f"Communicator with ID {comm_id} not found/registered.")
+
+    device = tensor.device
+    current_stream = torch.cuda.current_stream(device)
+
+    # 只在图捕获阶段使用独立的 comm_stream 和等待关系
+    if torch.cuda.is_current_stream_capturing():
+        comm_stream = _get_comm_stream(device)
+        # comm_stream wait current_stream (确保数据已准备好)
+        comm_stream.wait_stream(current_stream)
+        stream = comm_stream
+    else:
+        stream = current_stream
+
     print(f"begin afd_p2p_send_impl tensor.shape:{tensor.shape} comm_id:{comm_id}", flush=True)
-    comm.send(tensor, dst, stream=torch.cuda.current_stream(tensor.device))
+    comm.send(tensor, dst, stream=stream)
     print("end afd_p2p_send_impl", flush=True)
 
 def afd_p2p_send_fake(tensor: torch.Tensor, dst: int, comm_id: int) -> None:
@@ -79,9 +104,25 @@ def afd_p2p_recv_impl(
     comm = _AFD_COMMUNICATORS.get(comm_id)
     if comm is None:
         raise RuntimeError(f"Communicator with ID {comm_id} not found/registered.")
+
+    device = out.device
+    current_stream = torch.cuda.current_stream(device)
+
+    # 只在图捕获阶段使用独立的 comm_stream 和等待关系
+    if torch.cuda.is_current_stream_capturing():
+        comm_stream = _get_comm_stream(device)
+        stream = comm_stream
+    else:
+        stream = current_stream
+
     print(f"begin afd_p2p_recv_impl out.shape:{out.shape}", flush=True)
-    comm.recv(out, src, stream=torch.cuda.current_stream(out.device))
+    comm.recv(out, src, stream=stream)
     print("end afd_p2p_recv_impl", flush=True)
+
+    # 只在图捕获阶段添加等待关系
+    if current_stream.query_stream_capture():
+        # current_stream wait comm_stream (确保数据已接收完毕)
+        current_stream.wait_stream(comm_stream)
 
 def afd_p2p_recv_fake(
     out: torch.Tensor,
