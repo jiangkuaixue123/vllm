@@ -420,8 +420,8 @@ class UBatchWrapper:
             if cudagraph_runtime_mode is CUDAGraphMode.FULL:
                 assert batch_descriptor is not None
                 # TODO(jcz): check this
-                # if batch_descriptor.num_tokens in self.cudagraphs:
-                #     cudagraph_runtime_mode = CUDAGraphMode.NONE
+                if batch_descriptor.num_tokens in self.cudagraphs:
+                    cudagraph_runtime_mode = CUDAGraphMode.NONE
 
             if cudagraph_runtime_mode in (CUDAGraphMode.NONE, CUDAGraphMode.PIECEWISE):
                 logger.info(f"jcz UBatchWrapper __call__ 1")

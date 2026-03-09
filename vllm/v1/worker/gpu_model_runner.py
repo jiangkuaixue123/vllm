@@ -5555,28 +5555,28 @@ class GPUModelRunner(
                 )
             )
 
-            if allow_microbatching:
-                for _ in range(self.compilation_config.cudagraph_num_of_warmups):
-                    # Use CUDAGraphRuntimeStyle.NONE (default) for warmup.
-                    # But be careful, warm up with `NONE`is orthogonal to
-                    # if we want to warm up attention or not. This is
-                    # different from the case where `FULL` implies capture
-                    # attention while `PIECEWISE` implies no attention.
-                    self._is_warmup = True
-                    dummy_run(
-                        num_tokens,
-                        cudagraph_runtime_mode=CUDAGraphMode.NONE,
-                        allow_microbatching=False,
-                        num_active_loras=num_active_loras,
-                    )
-                self._is_warmup = False
-                dummy_run(
-                    num_tokens,
-                    cudagraph_runtime_mode=cudagraph_runtime_mode,
-                    allow_microbatching=False,
-                    num_active_loras=num_active_loras,
-                    is_graph_capturing=True,
-                )
+            # if allow_microbatching:
+            #     for _ in range(self.compilation_config.cudagraph_num_of_warmups):
+            #         # Use CUDAGraphRuntimeStyle.NONE (default) for warmup.
+            #         # But be careful, warm up with `NONE`is orthogonal to
+            #         # if we want to warm up attention or not. This is
+            #         # different from the case where `FULL` implies capture
+            #         # attention while `PIECEWISE` implies no attention.
+            #         self._is_warmup = True
+            #         dummy_run(
+            #             num_tokens,
+            #             cudagraph_runtime_mode=CUDAGraphMode.NONE,
+            #             allow_microbatching=False,
+            #             num_active_loras=num_active_loras,
+            #         )
+            #     self._is_warmup = False
+            #     dummy_run(
+            #         num_tokens,
+            #         cudagraph_runtime_mode=cudagraph_runtime_mode,
+            #         allow_microbatching=False,
+            #         num_active_loras=num_active_loras,
+            #         is_graph_capturing=True,
+            #     )
 
             for _ in range(self.compilation_config.cudagraph_num_of_warmups):
                 # Use CUDAGraphRuntimeStyle.NONE (default) for warmup.
