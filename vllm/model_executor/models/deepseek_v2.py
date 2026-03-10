@@ -1420,13 +1420,14 @@ class DeepseekV2DecoderLayer(nn.Module):
                                          num_redundant_experts
                 else:
                     global_num_experts = self.config.n_routed_experts + num_redundant_experts
-
+                routed_scaling_factor = getattr(self.config, "routed_scaling_factor", 1.0)
                 topk_weights, topk_ids = afd_connector.select_experts(
                     hidden_states=hidden_states,
                     router_logits=router_logits,
                     top_k=self.top_k,
                     use_grouped_topk=False,
                     renormalize=True,
+                    routed_scaling_factor=1.0 if not mix_placement else routed_scaling_factor,
                     e_score_correction_bias=self.gate.e_score_correction_bias,
                     mix_placement=mix_placement,
                     num_logical_experts=router_logits.shape[1],
