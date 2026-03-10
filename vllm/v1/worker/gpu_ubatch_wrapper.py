@@ -12,6 +12,9 @@ import vllm.envs as envs
 from vllm.compilation.cuda_graph import CUDAGraphWrapper
 from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.distributed import get_ep_group
+from vllm.distributed.afd_transfer.afd_connector.p2p_connector import (
+    _get_comm_stream,
+)
 from vllm.distributed.device_communicators.pynccl_allocator import set_graph_pool_id
 from vllm.forward_context import (
     AFDMetadata,
@@ -248,6 +251,10 @@ class UBatchWrapper:
             # Sync offloader's copy stream before capture.
             # Ensure any pre-capture prefetches from offloader are complete.
             get_offloader().sync_prev_onload()
+
+            # 通信流等待计算流，确保在捕获开始时同步
+            comm_stream = _get_comm_stream(self.device)
+            comm_stream.wait_stream(compute_stream)
 
             with torch.cuda.graph(
                 cudagraph_metadata.cudagraph,

@@ -78,7 +78,9 @@ def afd_p2p_send_impl(tensor: torch.Tensor, dst: int, comm_id: int) -> None:
         # comm_stream wait current_stream (确保数据已准备好)
         comm_stream.wait_stream(current_stream)
         stream = comm_stream
+        print("[afd_p2p_send_impl] using comm_stream for sending", flush=True)
     else:
+        print("[afd_p2p_send_impl] using current_stream for sending", flush=True)
         stream = current_stream
 
     print(f"begin afd_p2p_send_impl tensor.shape:{tensor.shape} comm_id:{comm_id}", flush=True)
@@ -112,15 +114,17 @@ def afd_p2p_recv_impl(
     if torch.cuda.is_current_stream_capturing():
         comm_stream = _get_comm_stream(device)
         stream = comm_stream
+        print("[afd_p2p_recv_impl] using comm_stream for receiving", flush=True)
     else:
         stream = current_stream
+        print("[afd_p2p_recv_impl] using current_stream for receiving", flush=True)
 
     print(f"begin afd_p2p_recv_impl out.shape:{out.shape}", flush=True)
     comm.recv(out, src, stream=stream)
     print("end afd_p2p_recv_impl", flush=True)
 
     # 只在图捕获阶段添加等待关系
-    if current_stream.query_stream_capture():
+    if torch.cuda.is_current_stream_capturing():
         # current_stream wait comm_stream (确保数据已接收完毕)
         current_stream.wait_stream(comm_stream)
 

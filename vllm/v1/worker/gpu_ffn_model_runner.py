@@ -20,6 +20,9 @@ from vllm.distributed.parallel_state import (
     graph_capture,
     is_global_first_rank
 )
+from vllm.distributed.afd_transfer.afd_connector.p2p_connector import (
+    _get_comm_stream,
+)
 from vllm.forward_context import (
     DPMetadata,
     set_forward_context,
@@ -305,7 +308,11 @@ class GPUFFNModelRunner(LoRAModelRunnerMixin):
                 self._graph_memory_pool = torch.cuda.graph_pool_handle()
             graph_key = self._make_graph_key(dp_metadata_list)
             cudagraph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(cudagraph, pool=self._graph_memory_pool):
+            comm_stream = _get_comm_stream(self.device)
+            with torch.cuda.graph(cudagraph,
+                                  stream=torch.cuda.current_stream(self.device),
+                                  pool=self._graph_memory_pool):
+                comm_stream.wait_stream(torch.cuda.current_stream(self.device))
                 output = self._ffn_forward(
                     dp_metadata_list=dp_metadata_list,
                     is_graph_capturing=is_attn_graph_capturing,
