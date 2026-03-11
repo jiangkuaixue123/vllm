@@ -1434,6 +1434,27 @@ class DeepseekV2DecoderLayer(nn.Module):
                     num_shared_experts=self.config.n_shared_experts,
                     global_num_experts=global_num_experts
                 )
+                enable_force_load_balance = self.vllm_config.additional_config.get("enable_force_load_balance", False)
+                global_num_experts = self.config.n_routed_experts
+                if enable_force_load_balance:
+                    # Construct a basic expert ID sequence and perform block-level cyclic shifting
+                    base = torch.arange(global_num_experts, dtype=torch.int32, device=topk_ids.device)
+                    # Assume it is divisible; otherwise, additional processing is required.
+                    block_size = global_num_experts // self.ep_size
+                    base_blocks = base.reshape(self.ep_size, block_size)
+                    shifted_blocks = torch.cat([base_blocks[self.ep_rank:], base_blocks[:self.ep_rank]], dim=0)
+                    base_shifted = shifted_blocks.reshape(-1)
+
+                    total_needed = topk_ids.shape[0] * self.top_k
+                    repeat_times = (total_needed + global_num_experts - 1) // global_num_experts
+                    expanded = base_shifted.repeat(repeat_times)[:total_needed]
+                    fake_routed_topk_ids = expanded.reshape(topk_ids.shape[0], self.top_k)
+
+                    if mix_placement:
+                        shared_topk_ids = topk_ids[:, self.top_k:]
+                        topk_ids = torch.cat([fake_routed_topk_ids, shared_topk_ids], dim=1)
+                    else:
+                        topk_ids = fake_routed_topk_ids
             else:
                 raise RuntimeError("AFD connector required for compute_gate_on_attention but not found in context.")
 
