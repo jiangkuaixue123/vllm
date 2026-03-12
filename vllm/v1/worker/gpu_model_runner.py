@@ -561,6 +561,7 @@ class GPUModelRunner(
             )
             self.afd_connector.init_afd_connector()
             self.num_stages = self.afd_config.num_afd_stages
+            self.is_ubatch = False
             logger.info(f"init afd_connector successfully")
         else:
             self.afd_connector = None
@@ -4717,6 +4718,7 @@ class GPUModelRunner(
             )
 
         # We skip EPLB here since we don't want to record dummy metrics
+        print(f'compilation_cases is {compilation_cases}')
         for num_tokens, activate_lora in compilation_cases:
             # We currently only capture ubatched graphs when its a FULL
             # cudagraph, a uniform decode batch, and the number of tokens
@@ -4740,6 +4742,7 @@ class GPUModelRunner(
                 # different from the case where `FULL` implies capture
                 # attention while `PIECEWISE` implies no attention.
                 force_attention = cudagraph_runtime_mode == CUDAGraphMode.FULL
+                print(f'cudagraph_runtime_mode in cudagraph_num_of_warmups is {cudagraph_runtime_mode}')
                 self._dummy_run(
                     num_tokens,
                     cudagraph_runtime_mode=CUDAGraphMode.NONE,
@@ -4750,6 +4753,7 @@ class GPUModelRunner(
                     remove_lora=False,
                     activate_lora=activate_lora,
                 )
+            print(f'cudagraph_runtime_mode in formal capture is {cudagraph_runtime_mode}')
             self._dummy_run(
                 num_tokens,
                 cudagraph_runtime_mode=cudagraph_runtime_mode,

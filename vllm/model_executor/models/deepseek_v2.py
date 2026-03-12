@@ -1572,6 +1572,7 @@ class DeepseekV2Model(nn.Module):
             # Compute dense layers on attn side.
             if layer.layer_idx < self.first_k_dense_replace:
                 hidden_states, residual = layer(positions, hidden_states, residual)
+                hidden_states = apply_dbo_yield(hidden_states)
                 continue
 
             afd_metadata.afd_stage_idx = forward_ctx.ubatch_idx
