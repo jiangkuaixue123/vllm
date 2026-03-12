@@ -1240,8 +1240,8 @@ class DeepseekV2DecoderLayer(nn.Module):
                 prefix=f"{prefix}.self_attn",
                 topk_indices_buffer=topk_indices_buffer,
             )
-
-        if self.afd_role is None or self.afd_role == "ffn" or self.is_mtp_layer:
+            
+        if self.afd_role is None or (self.afd_role == "ffn") != self.is_mtp_layer:            
             if (
                 config.n_routed_experts is not None
                 and layer_idx >= config.first_k_dense_replace
@@ -1252,6 +1252,7 @@ class DeepseekV2DecoderLayer(nn.Module):
                     parallel_config=parallel_config,
                     quant_config=quant_config,
                     prefix=f"{prefix}.mlp",
+                    is_mtp=self.is_mtp_layer
                 )
             else:
                 self.mlp = DeepseekV2MLP(
@@ -1262,7 +1263,7 @@ class DeepseekV2DecoderLayer(nn.Module):
                     prefix=f"{prefix}.mlp",
                 )
 
-        if self.afd_role is not None and self.afd_role == "attention" or self.is_mtp_layer:
+        if self.afd_role is not None and self.afd_role == "attention":
             # 这里增加gating的初始化
             if layer_idx >= config.first_k_dense_replace:
                 if self.afd_config and self.afd_config.compute_gate_on_attention:
@@ -1276,7 +1277,7 @@ class DeepseekV2DecoderLayer(nn.Module):
                             torch.empty(config.n_routed_experts, dtype=torch.float32))
                     else:
                         self.gate.e_score_correction_bias = None
-            # desne layer
+            # dense layer
             else:
                 self.mlp = DeepseekV2MLP(
                     hidden_size=config.hidden_size,
@@ -1473,20 +1474,23 @@ class DeepseekV2DecoderLayer(nn.Module):
                            x_active_mask: Optional[torch.Tensor] = None,
                            cam_p2p_ep_name: Optional[str] = "", ):
         assert self.afd_role == "ffn"
-        if self.afd_config is not None and self.afd_config.compute_gate_on_attention:
-            hidden_states = self.mlp.afd_forward(
-                hidden_states=hidden_states,
-                group_list=group_list,
-                dynamic_scales=dynamic_scales,
-                topk_weights=topk_weights,
-                topk_ids=topk_ids,
-                row_idx=row_idx,
-                router_logits=router_logits,
-                x_active_mask=x_active_mask,
-                cam_p2p_ep_name=cam_p2p_ep_name,
-            )
+        if self.mlp:
+            if self.afd_config is not None and self.afd_config.compute_gate_on_attention:
+                hidden_states = self.mlp.afd_forward(
+                    hidden_states=hidden_states,
+                    group_list=group_list,
+                    dynamic_scales=dynamic_scales,
+                    topk_weights=topk_weights,
+                    topk_ids=topk_ids,
+                    row_idx=row_idx,
+                    router_logits=router_logits,
+                    x_active_mask=x_active_mask,
+                    cam_p2p_ep_name=cam_p2p_ep_name,
+                )
+            else:
+                hidden_states = self.mlp(hidden_states)
         else:
-            hidden_states = self.mlp(hidden_states)
+            raise RuntimeError("in compute_ffn_output, no MLP")                    
 
         if isinstance(self.mlp, DeepseekV2MLP) and hidden_states.dtype == torch.float16:
             # Fix FP16 overflow
