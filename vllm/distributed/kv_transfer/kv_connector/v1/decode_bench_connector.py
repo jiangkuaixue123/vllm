@@ -373,40 +373,49 @@ class DecodeBenchConnectorWorker:
 
             kv_cache = self.kv_caches[layer_name]
 
-            # Convert block_ids to tensor on device
-            block_ids_tensor = torch.tensor(
-                block_ids, dtype=torch.long, device=kv_cache.device
-            )
-
-            # Filter invalid block IDs
-            valid_mask = block_ids_tensor < kv_cache.shape[0]
-            valid_block_ids = block_ids_tensor[valid_mask]
-
-            if len(valid_block_ids) == 0:
-                continue
-
-            # Create fill values - either constant or random
-            block_shape = kv_cache.shape[1:]
-            if self.fill_std > 0:
-                # Random normal sampling
-                fill_values = torch.normal(
-                    mean=self.fill_mean,
-                    std=self.fill_std,
-                    size=(len(valid_block_ids),) + block_shape,
-                    dtype=kv_cache.dtype,
-                    device=kv_cache.device,
-                )
+            # Handle both single tensor and tuple of tensors
+            # Some KV cache implementations use tuple (e.g., for K and V separately)
+            if isinstance(kv_cache, tuple):
+                kv_caches_to_fill = kv_cache
             else:
-                # Constant fill value
-                fill_values = torch.full(
-                    (len(valid_block_ids),) + block_shape,
-                    self.fill_mean,
-                    dtype=kv_cache.dtype,
-                    device=kv_cache.device,
+                kv_caches_to_fill = (kv_cache,)
+
+            for cache_tensor in kv_caches_to_fill:
+                # Convert block_ids to tensor on device
+                print(f"jcz cache_tensor:{cache_tensor.shape}")
+                block_ids_tensor = torch.tensor(
+                    block_ids, dtype=torch.long, device=cache_tensor.device
                 )
 
-            # Batch fill operation
-            kv_cache[valid_block_ids] = fill_values
+                # Filter invalid block IDs
+                valid_mask = block_ids_tensor < cache_tensor.shape[0]
+                valid_block_ids = block_ids_tensor[valid_mask]
+
+                if len(valid_block_ids) == 0:
+                    continue
+
+                # Create fill values - either constant or random
+                block_shape = cache_tensor.shape[1:]
+                if self.fill_std > 0:
+                    # Random normal sampling
+                    fill_values = torch.normal(
+                        mean=self.fill_mean,
+                        std=self.fill_std,
+                        size=(len(valid_block_ids),) + block_shape,
+                        dtype=cache_tensor.dtype,
+                        device=cache_tensor.device,
+                    )
+                else:
+                    # Constant fill value
+                    fill_values = torch.full(
+                        (len(valid_block_ids),) + block_shape,
+                        self.fill_mean,
+                        dtype=cache_tensor.dtype,
+                        device=cache_tensor.device,
+                    )
+
+                # Batch fill operation
+                cache_tensor[valid_block_ids] = fill_values
 
         logger.debug(
             "DecodeBenchConnector: Filled %d blocks in group %d with %s values "
