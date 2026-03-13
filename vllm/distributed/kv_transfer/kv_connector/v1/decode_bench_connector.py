@@ -382,7 +382,6 @@ class DecodeBenchConnectorWorker:
 
             for cache_tensor in kv_caches_to_fill:
                 # Convert block_ids to tensor on device
-                print(f"jcz cache_tensor:{cache_tensor.shape}")
                 block_ids_tensor = torch.tensor(
                     block_ids, dtype=torch.long, device=cache_tensor.device
                 )
