@@ -561,6 +561,7 @@ class GPUModelRunner(
             )
             self.afd_connector.init_afd_connector()
             self.num_stages = self.afd_config.num_afd_stages
+            self.is_ubatch = False
             logger.info(f"init afd_connector successfully")
         else:
             self.afd_connector = None
