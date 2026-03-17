@@ -156,7 +156,7 @@ class ParallelConfig:
 
     enable_dbo: bool = False
     """Enable dual batch overlap for the model executor."""
-    ubatch_size: int = 0
+    ubatch_size: int = 1
     """Number of ubatch size."""
 
     dbo_decode_token_threshold: int = 32
