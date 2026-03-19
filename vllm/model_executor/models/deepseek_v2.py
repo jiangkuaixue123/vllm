@@ -1194,6 +1194,13 @@ class DeepseekV2DecoderLayer(nn.Module):
         self.afd_role = self.afd_config.afd_role if self.afd_config is not None else None
         self.connector_name = self.afd_config.afd_connector if self.afd_config is not None else None
         self.top_k = getattr(config, 'num_experts_per_tok', 8)
+        self.enable_force_load_balance: bool = bool(
+            self.vllm_config.additional_config.get("enable_force_load_balance", False)
+        )
+        self.max_force_lb_tokens = getattr(
+            vllm_config.scheduler_config, "max_num_batched_tokens", 128
+        )
+        self.force_lb_fake_topk_buffer: torch.Tensor | None = None
         self.hidden_size = config.hidden_size
         max_position_embeddings = getattr(config, "max_position_embeddings", 8192)
         moe_layer_freq = getattr(config, "moe_layer_freq", 1)
@@ -1308,12 +1315,48 @@ class DeepseekV2DecoderLayer(nn.Module):
                                         self.n_local_physical_experts)
 
             self.is_sequence_parallel = parallel_config.use_sequence_parallel_moe
+            if self.enable_force_load_balance:
+                max_tokens = max(self.max_force_lb_tokens, 1)
+                self._init_force_lb_buffer(
+                    max_tokens=max_tokens, device=current_platform.device_type
+                )
 
         self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
         self.routed_scaling_factor = getattr(config, "routed_scaling_factor", 1.0)
+
+    def _init_force_lb_buffer(self, max_tokens: int,
+                              device: torch.device) -> None:
+        # Pre-build a fixed fake routing table to avoid per-step graph ops.
+        global_num_experts = self.config.n_routed_experts
+        block_size = global_num_experts // self.ep_size
+        base = torch.arange(global_num_experts, dtype=torch.int32, device=device)
+        base_blocks = base.reshape(self.ep_size, block_size)
+        shifted_blocks = torch.cat(
+            [base_blocks[self.ep_rank:], base_blocks[:self.ep_rank]], dim=0)
+        base_shifted = shifted_blocks.reshape(-1)
+
+        total_needed = max_tokens * self.top_k
+        repeat_times = (total_needed + global_num_experts - 1) // global_num_experts
+        expanded = base_shifted.repeat(repeat_times)[:total_needed]
+        self.force_lb_fake_topk_buffer = expanded.reshape(max_tokens, self.top_k)
+
+    def _get_force_lb_topk_ids(self, batch_tokens: int,
+                               device: torch.device) -> torch.Tensor | None:
+        if self.force_lb_fake_topk_buffer is None:
+            raise RuntimeError(
+                "force_lb_fake_topk_buffer is not initialized; "
+                "expected preallocation during module init."
+            )
+        if self.force_lb_fake_topk_buffer.device != device:
+            self.force_lb_fake_topk_buffer = self.force_lb_fake_topk_buffer.to(
+                device, non_blocking=True
+            )
+        if batch_tokens > self.force_lb_fake_topk_buffer.size(0):
+            return None
+        return self.force_lb_fake_topk_buffer[:batch_tokens, :self.top_k]
 
     def forward(
         self,
@@ -1434,27 +1477,17 @@ class DeepseekV2DecoderLayer(nn.Module):
                     num_shared_experts=self.config.n_shared_experts,
                     global_num_experts=global_num_experts
                 )
-                enable_force_load_balance = self.vllm_config.additional_config.get("enable_force_load_balance", False)
-                global_num_experts = self.config.n_routed_experts
-                if enable_force_load_balance:
-                    # Construct a basic expert ID sequence and perform block-level cyclic shifting
-                    base = torch.arange(global_num_experts, dtype=torch.int32, device=topk_ids.device)
-                    # Assume it is divisible; otherwise, additional processing is required.
-                    block_size = global_num_experts // self.ep_size
-                    base_blocks = base.reshape(self.ep_size, block_size)
-                    shifted_blocks = torch.cat([base_blocks[self.ep_rank:], base_blocks[:self.ep_rank]], dim=0)
-                    base_shifted = shifted_blocks.reshape(-1)
+                if self.enable_force_load_balance:
+                    fake_routed_topk_ids = self._get_force_lb_topk_ids(
+                        batch_tokens=topk_ids.shape[0], device=topk_ids.device
+                    )
+                    if fake_routed_topk_ids is not None:
+                        if mix_placement:
+                            shared_topk_ids = topk_ids[:, self.top_k:]
+                            topk_ids = torch.cat([fake_routed_topk_ids, shared_topk_ids], dim=1)
+                        else:
+                            topk_ids = fake_routed_topk_ids
 
-                    total_needed = topk_ids.shape[0] * self.top_k
-                    repeat_times = (total_needed + global_num_experts - 1) // global_num_experts
-                    expanded = base_shifted.repeat(repeat_times)[:total_needed]
-                    fake_routed_topk_ids = expanded.reshape(topk_ids.shape[0], self.top_k)
-
-                    if mix_placement:
-                        shared_topk_ids = topk_ids[:, self.top_k:]
-                        topk_ids = torch.cat([fake_routed_topk_ids, shared_topk_ids], dim=1)
-                    else:
-                        topk_ids = fake_routed_topk_ids
             else:
                 raise RuntimeError("AFD connector required for compute_gate_on_attention but not found in context.")
 
