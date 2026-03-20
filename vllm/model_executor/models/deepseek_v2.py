@@ -1331,12 +1331,12 @@ class DeepseekV2DecoderLayer(nn.Module):
                               device: torch.device) -> None:
         # Pre-build a fixed fake routing table to avoid per-step graph ops.
         global_num_experts = self.config.n_routed_experts
-        block_size = global_num_experts // self.ep_size
-        base = torch.arange(global_num_experts, dtype=torch.int32, device=device)
-        base_blocks = base.reshape(self.ep_size, block_size)
-        shifted_blocks = torch.cat(
-            [base_blocks[self.ep_rank:], base_blocks[:self.ep_rank]], dim=0)
-        base_shifted = shifted_blocks.reshape(-1)
+        # Use a random permutation + strided partition so we can handle
+        # global_num_experts not divisible by ep_size.
+        base = torch.randperm(global_num_experts, device=device, dtype=torch.int32)
+        base_chunks = [base[i::self.ep_size] for i in range(self.ep_size)]
+        shifted_chunks = base_chunks[self.ep_rank:] + base_chunks[:self.ep_rank]
+        base_shifted = torch.cat(shifted_chunks, dim=0)
 
         total_needed = max_tokens * self.top_k
         repeat_times = (total_needed + global_num_experts - 1) // global_num_experts
