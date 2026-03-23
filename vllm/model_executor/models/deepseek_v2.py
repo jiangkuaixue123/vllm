@@ -1469,7 +1469,7 @@ class DeepseekV2DecoderLayer(nn.Module):
                     router_logits=router_logits,
                     top_k=self.top_k,
                     use_grouped_topk=False,
-                    renormalize=True,
+                    renormalize=getattr(self.config, "norm_topk_prob", True),
                     routed_scaling_factor=1.0 if not mix_placement else routed_scaling_factor,
                     e_score_correction_bias=self.gate.e_score_correction_bias,
                     mix_placement=mix_placement,
