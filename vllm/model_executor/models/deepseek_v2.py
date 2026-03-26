@@ -1283,15 +1283,6 @@ class DeepseekV2DecoderLayer(nn.Module):
                             torch.empty(config.n_routed_experts, dtype=torch.float32))
                     else:
                         self.gate.e_score_correction_bias = None
-            # desne layer
-            else:
-                self.mlp = DeepseekV2MLP(
-                    hidden_size=config.hidden_size,
-                    intermediate_size=config.intermediate_size,
-                    hidden_act=config.hidden_act,
-                    quant_config=quant_config,
-                    prefix=f"{prefix}.mlp",
-                )
 
             # Load balancing settings.
             eplb_config = parallel_config.eplb_config
@@ -1509,18 +1500,21 @@ class DeepseekV2DecoderLayer(nn.Module):
                            x_active_mask: Optional[torch.Tensor] = None,
                            cam_p2p_ep_name: Optional[str] = "", ):
         assert self.afd_role == "ffn"
-        if self.afd_config is not None and self.afd_config.compute_gate_on_attention:
-            hidden_states = self.mlp.afd_forward(
-                hidden_states=hidden_states,
-                group_list=group_list,
-                dynamic_scales=dynamic_scales,
-                topk_weights=topk_weights,
-                topk_ids=topk_ids,
-                row_idx=row_idx,
-                router_logits=router_logits,
-                x_active_mask=x_active_mask,
-                cam_p2p_ep_name=cam_p2p_ep_name,
-            )
+        if isinstance(self.mlp, DeepseekV2MoE):
+            if self.afd_config is not None and self.afd_config.compute_gate_on_attention:
+                hidden_states = self.mlp.afd_forward(
+                    hidden_states=hidden_states,
+                    group_list=group_list,
+                    dynamic_scales=dynamic_scales,
+                    topk_weights=topk_weights,
+                    topk_ids=topk_ids,
+                    row_idx=row_idx,
+                    router_logits=router_logits,
+                    x_active_mask=x_active_mask,
+                    cam_p2p_ep_name=cam_p2p_ep_name,
+                )
+            else:
+                hidden_states = self.mlp(hidden_states)
         else:
             hidden_states = self.mlp(hidden_states)
 
@@ -1626,15 +1620,7 @@ class DeepseekV2Model(nn.Module):
         forward_ctx = get_forward_context()
         afd_connector = afd_metadata.afd_connector
         for layer in islice(self.layers, self.start_layer, self.end_layer):
-            # Compute dense layers on attn side.
-            if layer.layer_idx < self.first_k_dense_replace:
-                hidden_states, residual = layer(positions, hidden_states, residual)
-                hidden_states = apply_dbo_yield(hidden_states)
-                continue
-
             afd_metadata.afd_stage_idx = forward_ctx.ubatch_idx
-            # start_idx = afd_metadata.afd_tokens_start_loc[afd_metadata.afd_stage_idx]
-            # end_idx = start_idx + afd_metadata.afd_tokens_lens[afd_metadata.afd_stage_idx]
 
             if self.enforce_eager:
                 logger.info(f"forward_m2n deepseek_v2 layer_idx:{layer.layer_idx} "
@@ -1646,9 +1632,7 @@ class DeepseekV2Model(nn.Module):
                 for work in recv_handle:
                     work.wait()
 
-            if layer.layer_idx > self.first_k_dense_replace:
-                # Pre-computation Receive Phase
-                # TODO:待适配M2N CAMP2P算子metadata
+            if layer.layer_idx > 0:
                 recv_hidden_states = afd_connector.recv_ffn_output(
                     hidden_states=hidden_states,
                     metadata=None,
@@ -1684,7 +1668,6 @@ class DeepseekV2Model(nn.Module):
 
             hidden_states = apply_dbo_yield(hidden_states)
 
-        # TODO:待适配M2N CAMP2P算子metadata
         recv_hidden_states = afd_connector.recv_ffn_output(
             hidden_states=hidden_states,
             metadata=afd_metadata
