@@ -1342,6 +1342,15 @@ class DeepseekV2DecoderLayer(nn.Module):
         repeat_times = (total_needed + base_shifted.numel() - 1) // base_shifted.numel()
         expanded = base_shifted.repeat(repeat_times)[:total_needed]
         self.force_lb_fake_topk_buffer = expanded.reshape(max_tokens, self.top_k)
+        logger.info(
+            "Initialized force load balance fake topk ids for layer %d "
+            "(ep_rank=%d, topn_per_rank=%d, expert_cycle=%s, first_token_topk=%s)",
+            self.layer_idx,
+            self.ep_rank,
+            self.force_load_balance_topn_per_rank,
+            base_shifted.detach().cpu().tolist(),
+            self.force_lb_fake_topk_buffer[0].detach().cpu().tolist(),
+        )
 
     def _validate_force_lb_config(self) -> None:
         if self.force_load_balance_topn_per_rank == 0:
