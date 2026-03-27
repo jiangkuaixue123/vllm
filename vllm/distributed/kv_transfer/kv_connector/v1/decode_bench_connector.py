@@ -105,6 +105,7 @@ class DecodeBenchConnector(KVConnectorBase_V1):
         self.connector_worker.register_kv_caches(kv_caches)
 
     def start_load_kv(self, forward_context: "ForwardContext", **kwargs: Any) -> None:
+        return
         assert self.connector_worker is not None
         assert isinstance(self._connector_metadata, DecodeBenchConnectorMetadata)
         self.connector_worker.start_fill_kv(self._connector_metadata)
