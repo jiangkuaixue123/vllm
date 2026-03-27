@@ -1197,6 +1197,11 @@ class DeepseekV2DecoderLayer(nn.Module):
         self.enable_force_load_balance: bool = bool(
             self.vllm_config.additional_config.get("enable_force_load_balance", False)
         )
+        self.force_load_balance_topn_per_rank = int(
+            self.vllm_config.additional_config.get(
+                "force_load_balance_topn_per_rank", 0
+            )
+        )
         self.max_force_lb_tokens = getattr(
             vllm_config.scheduler_config, "max_num_batched_tokens", 128
         )
@@ -1317,6 +1322,7 @@ class DeepseekV2DecoderLayer(nn.Module):
             self.is_sequence_parallel = parallel_config.use_sequence_parallel_moe
             if self.enable_force_load_balance:
                 max_tokens = max(self.max_force_lb_tokens, 1)
+                self._validate_force_lb_config()
                 self._init_force_lb_buffer(
                     max_tokens=max_tokens, device=current_platform.device_type
                 )
@@ -1330,18 +1336,66 @@ class DeepseekV2DecoderLayer(nn.Module):
     def _init_force_lb_buffer(self, max_tokens: int,
                               device: torch.device) -> None:
         # Pre-build a fixed fake routing table to avoid per-step graph ops.
+        base_shifted = self._build_force_lb_expert_cycle(device)
+
+        total_needed = max_tokens * self.top_k
+        repeat_times = (total_needed + base_shifted.numel() - 1) // base_shifted.numel()
+        expanded = base_shifted.repeat(repeat_times)[:total_needed]
+        self.force_lb_fake_topk_buffer = expanded.reshape(max_tokens, self.top_k)
+        logger.info(
+            "Initialized force load balance fake topk ids for layer %d "
+            "(ep_rank=%d, topn_per_rank=%d, expert_cycle=%s, first_token_topk=%s)",
+            self.layer_idx,
+            self.ep_rank,
+            self.force_load_balance_topn_per_rank,
+            base_shifted.detach().cpu().tolist(),
+            self.force_lb_fake_topk_buffer[0].detach().cpu().tolist(),
+        )
+
+    def _validate_force_lb_config(self) -> None:
+        if self.force_load_balance_topn_per_rank == 0:
+            return
+
+        assert self.force_load_balance_topn_per_rank > 0, (
+            "force_load_balance_topn_per_rank must be >= 0"
+        )
+        assert self.ep_size > 0, "ep_size must be positive"
+        assert self.n_routed_experts % self.ep_size == 0, (
+            "force_load_balance_topn_per_rank requires n_routed_experts "
+            "to be divisible by ep_size"
+        )
+
+        local_routed_experts = self.n_routed_experts // self.ep_size
+        assert self.force_load_balance_topn_per_rank <= local_routed_experts, (
+            "force_load_balance_topn_per_rank exceeds routed experts on each "
+            "FFN rank"
+        )
+        assert self.top_k <= self.force_load_balance_topn_per_rank * self.ep_size, (
+            "top_k must be <= force_load_balance_topn_per_rank * ep_size"
+        )
+
+    def _build_force_lb_expert_cycle(self, device: torch.device) -> torch.Tensor:
+        if self.force_load_balance_topn_per_rank > 0:
+            local_routed_experts = self.n_routed_experts // self.ep_size
+            per_rank_cycles = [
+                torch.arange(
+                    rank * local_routed_experts,
+                    rank * local_routed_experts
+                    + self.force_load_balance_topn_per_rank,
+                    device=device,
+                    dtype=torch.int32,
+                )
+                for rank in range(self.ep_size)
+            ]
+            return torch.cat(per_rank_cycles, dim=0)
+
         global_num_experts = self.config.n_routed_experts
         # Use a random permutation + strided partition so we can handle
         # global_num_experts not divisible by ep_size.
         base = torch.randperm(global_num_experts, device=device, dtype=torch.int32)
         base_chunks = [base[i::self.ep_size] for i in range(self.ep_size)]
         shifted_chunks = base_chunks[self.ep_rank:] + base_chunks[:self.ep_rank]
-        base_shifted = torch.cat(shifted_chunks, dim=0)
-
-        total_needed = max_tokens * self.top_k
-        repeat_times = (total_needed + global_num_experts - 1) // global_num_experts
-        expanded = base_shifted.repeat(repeat_times)[:total_needed]
-        self.force_lb_fake_topk_buffer = expanded.reshape(max_tokens, self.top_k)
+        return torch.cat(shifted_chunks, dim=0)
 
     def _get_force_lb_topk_ids(self, batch_tokens: int,
                                device: torch.device) -> torch.Tensor | None:
