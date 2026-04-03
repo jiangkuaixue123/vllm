@@ -49,11 +49,16 @@ class AFDConfig:
     """Whether to compute the gate on the attention side."""
 
     multistream_info: dict[str, Any] = field(
-        default_factory = lambda: {"enable": "False", "core_num": "8"})
+        default_factory=lambda: {
+            "attn_enable": "False",
+            "attn_core_num": "8",
+            "ffn_enable": "False",
+            "ffn_core_num": "8",
+        })
     """
-    MultiStream configuration:
-        1. enable flag;
-        2. when enabled, set core_num of communication stream.
+    MultiStream configuration (A-side and F-side independently):
+        - attn_enable / attn_core_num: attention-side a2e comm overlap
+        - ffn_enable / ffn_core_num:   ffn-side e2a comm overlap
     """
 
     quant_mode: int = 0
@@ -93,6 +98,17 @@ class AFDConfig:
         return self.afd_role == "ffn"
 
     @property
-    def is_multistream(self) -> bool:
-        """Check if multistream is enabled"""
-        return self.multistream_info["enable"] == "True"
+    def is_attn_multistream(self) -> bool:
+        return str(self.multistream_info["attn_enable"]) == "True"
+
+    @property
+    def is_ffn_multistream(self) -> bool:
+        return str(self.multistream_info["ffn_enable"]) == "True"
+
+    @property
+    def attn_core_num(self) -> int:
+        return int(self.multistream_info["attn_core_num"])
+
+    @property
+    def ffn_core_num(self) -> int:
+        return int(self.multistream_info["ffn_core_num"])
