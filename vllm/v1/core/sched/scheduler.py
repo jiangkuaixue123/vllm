@@ -372,6 +372,17 @@ class Scheduler(SchedulerInterface):
             scheduled_running_reqs.append(request)
             req_to_new_blocks[request.request_id] = new_blocks
             num_scheduled_tokens[request.request_id] = num_new_tokens
+            if num_new_tokens > 1:
+                logger.warning(
+                    "Scheduled req from RUNNING path with num_new_tokens=%d: "
+                    "req_id=%s, num_computed_tokens=%d, num_tokens=%d, "
+                    "token_budget=%d",
+                    num_new_tokens,
+                    request.request_id,
+                    request.num_computed_tokens,
+                    request.num_tokens,
+                    token_budget,
+                )
             token_budget -= num_new_tokens
             req_index += 1
 
@@ -635,6 +646,24 @@ class Scheduler(SchedulerInterface):
                     self.kv_cache_manager.get_blocks(request.request_id)
                 )
                 num_scheduled_tokens[request.request_id] = num_new_tokens
+                if num_new_tokens > 1:
+                    req_origin = (
+                        "WAITING"
+                        if request.status == RequestStatus.WAITING
+                        else "PREEMPTED"
+                    )
+                    logger.warning(
+                        "Scheduled req from %s path with num_new_tokens=%d: "
+                        "req_id=%s, num_computed_tokens=%d, num_tokens=%d, "
+                        "num_external_computed_tokens=%d, token_budget=%d",
+                        req_origin,
+                        num_new_tokens,
+                        request.request_id,
+                        num_computed_tokens,
+                        request.num_tokens,
+                        num_external_computed_tokens,
+                        token_budget,
+                    )
                 token_budget -= num_new_tokens
                 request.status = RequestStatus.RUNNING
                 request.num_computed_tokens = num_computed_tokens

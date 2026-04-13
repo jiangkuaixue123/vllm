@@ -44,6 +44,7 @@ from vllm.distributed.kv_transfer.kv_connector.v1 import (
 from vllm.distributed.kv_transfer.kv_connector.v1.base import KVConnectorMetadata
 from vllm.logger import init_logger
 from vllm.utils.math_utils import cdiv
+from vllm.v1.request import RequestStatus
 
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
@@ -199,8 +200,18 @@ class DecodeBenchConnectorScheduler:
         """
         req_id = request.request_id
 
-        # Only fill once per request on first scheduling
-        if req_id in self._filled_requests:
+        # Allow a request to re-fill after scheduler preemption resets its
+        # computed-token progress. This keeps DecodeBenchConnector aligned
+        # with the benchmark's intent of emulating prefilled remote KV.
+        allow_refill_after_preempt = (
+            request.status == RequestStatus.PREEMPTED
+            and request.num_preemptions > 0
+            and num_computed_tokens == 0
+        )
+
+        # Only fill once per request on first scheduling unless the request
+        # is resuming after preemption.
+        if req_id in self._filled_requests and not allow_refill_after_preempt:
             return 0, False
 
         # Calculate how many tokens we need to fill
