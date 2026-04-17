@@ -43,6 +43,15 @@ VLLM_SUBCMD_PARSER_EPILOG = (
 )
 
 
+def log_server_load(request: Request, event: str) -> None:
+    logger.info(
+        "API in-flight requests=%d event=%s path=%s",
+        request.app.state.server_load_metrics,
+        event,
+        request.url.path,
+    )
+
+
 async def listen_for_disconnect(request: Request) -> None:
     """Returns if a disconnect message is received"""
     while True:
@@ -55,6 +64,7 @@ async def listen_for_disconnect(request: Request) -> None:
                 request.app.state, "enable_server_load_tracking", False
             ) and hasattr(request.app.state, "server_load_metrics"):
                 request.app.state.server_load_metrics -= 1
+                log_server_load(request, "disconnect")
             break
 
 
@@ -105,6 +115,7 @@ def with_cancellation(handler_func):
 
 def decrement_server_load(request: Request):
     request.app.state.server_load_metrics -= 1
+    log_server_load(request, "complete")
 
 
 def load_aware_call(func):
@@ -125,10 +136,12 @@ def load_aware_call(func):
             raw_request.app.state.server_load_metrics = 0
 
         raw_request.app.state.server_load_metrics += 1
+        log_server_load(raw_request, "start")
         try:
             response = await func(*args, **kwargs)
         except Exception:
             raw_request.app.state.server_load_metrics -= 1
+            log_server_load(raw_request, "error")
             raise
 
         if isinstance(response, (JSONResponse, StreamingResponse)):
@@ -149,6 +162,7 @@ def load_aware_call(func):
                 response.background = tasks
         else:
             raw_request.app.state.server_load_metrics -= 1
+            log_server_load(raw_request, "complete")
 
         return response
 
