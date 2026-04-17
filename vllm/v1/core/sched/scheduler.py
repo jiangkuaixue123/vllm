@@ -701,6 +701,13 @@ class Scheduler(SchedulerInterface):
         assert len(scheduled_new_reqs) + len(scheduled_resumed_reqs) + len(
             scheduled_running_reqs
         ) <= len(self.running)
+        self._log_request_counts(
+            "schedule_step",
+            scheduled_new=len(scheduled_new_reqs),
+            scheduled_resumed=len(scheduled_resumed_reqs),
+            scheduled_running=len(scheduled_running_reqs),
+            preempted=len(preempted_reqs),
+        )
 
         # Get the longest common prefix among all requests in the running queue.
         # This can be potentially used for cascade attention.
@@ -1373,9 +1380,20 @@ class Scheduler(SchedulerInterface):
         """Returns (num_running_reqs, num_waiting_reqs)."""
         return len(self.running), len(self.waiting)
 
+    def _log_request_counts(self, event: str, **kwargs: Any) -> None:
+        num_running_reqs, num_waiting_reqs = self.get_request_counts()
+        log_kwargs = {
+            "total": num_running_reqs + num_waiting_reqs,
+            "running": num_running_reqs,
+            "waiting": num_waiting_reqs,
+            **kwargs,
+        }
+        logger.info("Scheduler request counts [%s]: %s", event, log_kwargs)
+
     def add_request(self, request: Request) -> None:
         self.waiting.add_request(request)
         self.requests[request.request_id] = request
+        self._log_request_counts("add_request", request_id=request.request_id)
         if self.log_stats:
             request.record_event(EngineCoreEventType.QUEUED)
 
@@ -1422,6 +1440,13 @@ class Scheduler(SchedulerInterface):
         for request in valid_requests:
             request.status = finished_status
             self._free_request(request)
+
+        if valid_requests:
+            self._log_request_counts(
+                "finish_requests",
+                finished_status=finished_status.name,
+                request_ids=[request.request_id for request in valid_requests],
+            )
 
     def _free_request(self, request: Request) -> dict[str, Any] | None:
         assert request.is_finished()
@@ -1517,6 +1542,8 @@ class Scheduler(SchedulerInterface):
     ) -> SchedulerStats | None:
         if not self.log_stats:
             return None
+        num_running_reqs, num_waiting_reqs = self.get_request_counts()
+        self._log_request_counts("make_stats")
         prefix_cache_stats = self.kv_cache_manager.make_prefix_cache_stats()
         assert prefix_cache_stats is not None
         connector_prefix_cache_stats = self._make_connector_prefix_cache_stats()
@@ -1530,8 +1557,8 @@ class Scheduler(SchedulerInterface):
             kv_connector_stats.data if kv_connector_stats else None
         )
         return SchedulerStats(
-            num_running_reqs=len(self.running),
-            num_waiting_reqs=len(self.waiting),
+            num_running_reqs=num_running_reqs,
+            num_waiting_reqs=num_waiting_reqs,
             kv_cache_usage=self.kv_cache_manager.usage,
             prefix_cache_stats=prefix_cache_stats,
             connector_prefix_cache_stats=connector_prefix_cache_stats,
