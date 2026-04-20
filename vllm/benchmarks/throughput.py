@@ -349,6 +349,7 @@ def get_requests(args, tokenizer):
     if args.dataset_path is None or args.dataset_name == "random":
         sample_kwargs["range_ratio"] = args.random_range_ratio
         sample_kwargs["prefix_len"] = args.prefix_len
+        sample_kwargs["base_num_prompts"] = args.random_base_num_prompts
         dataset_cls = RandomDataset
     elif args.dataset_name == "sharegpt":
         dataset_cls = ShareGPTDataset

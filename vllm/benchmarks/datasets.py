@@ -471,6 +471,7 @@ class RandomDataset(BenchmarkDataset):
         num_requests: int,
         request_id_prefix: str = "",
         no_oversample: bool = False,
+        base_num_prompts: int | None = None,
         prefix_len: int = DEFAULT_PREFIX_LEN,
         range_ratio: float = DEFAULT_RANGE_RATIO,
         input_len: int = DEFAULT_INPUT_LEN,
@@ -478,6 +479,13 @@ class RandomDataset(BenchmarkDataset):
         batchsize: int = 1,
         **kwargs,
     ) -> list[SampleRequest]:
+        if base_num_prompts is not None and base_num_prompts <= 0:
+            raise ValueError("base_num_prompts must be greater than 0.")
+
+        unique_requests = num_requests
+        if base_num_prompts is not None:
+            unique_requests = min(num_requests, base_num_prompts)
+
         # validate total input tokens (prefix + sampled) is at least 1.
         num_special = int(tokenizer.num_special_tokens_to_add())
         real_input_len = max(0, int(input_len) - num_special)
@@ -495,7 +503,7 @@ class RandomDataset(BenchmarkDataset):
             )
 
         input_lens, output_lens, offsets = self.get_sampling_params(
-            num_requests, range_ratio, input_len, output_len, tokenizer
+            unique_requests, range_ratio, input_len, output_len, tokenizer
         )
 
         vocab_size = tokenizer.vocab_size
@@ -508,7 +516,7 @@ class RandomDataset(BenchmarkDataset):
 
         requests = []
         token_mismatch_total = 0
-        for i in range(num_requests):
+        for i in range(unique_requests):
             prompt, total_input_len, token_mismatch = self.generate_token_sequence(  # noqa: E501
                 tokenizer=tokenizer,
                 prefix_token_ids=prefix_token_ids,
@@ -528,11 +536,17 @@ class RandomDataset(BenchmarkDataset):
                     request_id=request_id_prefix + str(i),
                 )
             )
+        self.maybe_oversample_requests(
+            requests,
+            num_requests,
+            request_id_prefix=request_id_prefix,
+            no_oversample=no_oversample,
+        )
         # only used for embeddings benchmark.
         if batchsize > 1:
             batch_requests = []
             # Create batched requests
-            for i in range(0, num_requests, batchsize):
+            for i in range(0, len(requests), batchsize):
                 batch = requests[i : i + batchsize]
                 batch_requests.append(
                     SampleRequest(
@@ -1478,6 +1492,16 @@ def add_dataset_parser(parser: FlexibleArgumentParser):
         help=("Batch size for random sampling. Only used for embeddings benchmark."),
     )
     random_group.add_argument(
+        "--random-base-num-prompts",
+        type=int,
+        default=None,
+        help=(
+            "Generate at most this many unique prompts for the random dataset, "
+            "then repeat them to reach --num-prompts. Useful for reducing "
+            "dataset preparation time when benchmarking many prompts."
+        ),
+    )
+    random_group.add_argument(
         "--no-reranker",
         action="store_true",
         help=(
@@ -1851,6 +1875,7 @@ def get_samples(args, tokenizer: TokenizerLike) -> list[SampleRequest]:
             ).sample(
                 tokenizer=tokenizer,
                 num_requests=args.num_prompts,
+                base_num_prompts=args.random_base_num_prompts,
                 prefix_len=args.random_prefix_len,
                 input_len=args.random_input_len,
                 output_len=args.random_output_len,
