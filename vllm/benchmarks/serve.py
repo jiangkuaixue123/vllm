@@ -94,6 +94,8 @@ class BenchmarkMetrics:
     # Max output tokens per second and concurrent requests at that peak
     max_output_tokens_per_s: float
     max_concurrent_requests: int
+    output_tokens_per_second: list[int]
+    concurrent_requests_per_second: list[int]
 
 
 @dataclass
@@ -379,6 +381,8 @@ def calculate_metrics(
     # Calculate max output tokens per second metric
     max_output_tokens_per_s = 0.0
     max_concurrent_requests = 0
+    output_tokens_per_second = []
+    concurrent_requests_per_second = []
 
     # Find the time range across all successful requests
     successful_outputs = [output for output in outputs if output.success]
@@ -423,6 +427,12 @@ def calculate_metrics(
         if len(tokens_per_second) > 0:
             max_output_tokens_per_s = float(np.max(tokens_per_second))
             max_concurrent_requests = int(np.max(concurrent_requests_per_second))
+            output_tokens_per_second = [
+                int(count) for count in tokens_per_second.tolist()
+            ]
+            concurrent_requests_per_second = [
+                int(count) for count in concurrent_requests_per_second.tolist()
+            ]
 
         if TERM_PLOTLIB_AVAILABLE:
             import termplotlib as tpl
@@ -478,6 +488,8 @@ def calculate_metrics(
         ],
         max_output_tokens_per_s=max_output_tokens_per_s,
         max_concurrent_requests=max_concurrent_requests,
+        output_tokens_per_second=output_tokens_per_second,
+        concurrent_requests_per_second=concurrent_requests_per_second,
     )
 
     return metrics, actual_output_lens
@@ -809,10 +821,11 @@ async def benchmark(
             "output_lens": actual_output_lens,
             "ttfts": [output.ttft for output in outputs],
             "itls": [output.itl for output in outputs],
-            "generated_texts": [output.generated_text for output in outputs],
             "errors": [output.error for output in outputs],
             "max_output_tokens_per_s": metrics.max_output_tokens_per_s,
             "max_concurrent_requests": metrics.max_concurrent_requests,
+            "output_tokens_per_second": metrics.output_tokens_per_second,
+            "concurrent_requests_per_second": metrics.concurrent_requests_per_second,
         }
     else:
         result = {
