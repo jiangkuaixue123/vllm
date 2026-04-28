@@ -2805,6 +2805,8 @@ class GPUModelRunner(
         force_uniform_decode: bool | None = None,
         force_has_lora: bool | None = None,
         num_encoder_reqs: int = 0,
+        timing_state: dict[str, Any] | None = None,
+        timing_recorder: Any | None = None,
     ) -> tuple[
         CUDAGraphMode,
         BatchDescriptor,
@@ -2812,6 +2814,13 @@ class GPUModelRunner(
         torch.Tensor | None,
         CUDAGraphStat | None,
     ]:
+
+        def record_stage(tag: str, start_time: float) -> float:
+            if timing_recorder is not None:
+                timing_recorder(timing_state, tag, start_time)
+            return time.perf_counter()
+
+        stage_started = time.perf_counter()
         num_tokens_padded = self._pad_for_sequence_parallelism(num_tokens)
         uniform_decode = (
             (
@@ -2832,6 +2841,9 @@ class GPUModelRunner(
             if force_has_lora is None
             else force_has_lora
         )
+        stage_started = record_stage(
+            "prepare_batch_determine_setup_host_ms", stage_started
+        )
 
         dispatch_cudagraph = (
             lambda num_tokens, disable_full: self.cudagraph_dispatcher.dispatch(
@@ -2848,6 +2860,9 @@ class GPUModelRunner(
             num_tokens_padded, use_cascade_attn or has_encoder_output
         )
         num_tokens_padded = batch_descriptor.num_tokens
+        stage_started = record_stage(
+            "prepare_batch_determine_first_dispatch_host_ms", stage_started
+        )
 
         # Extra coordination when running data-parallel since we need to coordinate
         # across ranks
@@ -2874,19 +2889,36 @@ class GPUModelRunner(
                     cudagraph_mode=cudagraph_mode.value,
                 )
             )
+            stage_started = record_stage(
+                "prepare_batch_determine_coordinate_dp_host_ms",
+                stage_started,
+            )
 
             # Extract DP-synced values
             if num_tokens_across_dp is not None:
                 dp_rank = self.parallel_config.data_parallel_rank
                 num_tokens_padded = int(num_tokens_across_dp[dp_rank].item())
+                stage_started = record_stage(
+                    "prepare_batch_determine_extract_synced_host_ms",
+                    stage_started,
+                )
                 # Re-dispatch with DP padding so we have the correct batch_descriptor
                 cudagraph_mode, batch_descriptor = dispatch_cudagraph(
                     num_tokens_padded,
                     disable_full=synced_cudagraph_mode <= CUDAGraphMode.PIECEWISE.value,
                 )
+                stage_started = record_stage(
+                    "prepare_batch_determine_redispatch_host_ms",
+                    stage_started,
+                )
                 # Assert to make sure the agreed upon token count is correct otherwise
                 # num_tokens_across_dp will no-longer be valid
                 assert batch_descriptor.num_tokens == num_tokens_padded
+        else:
+            stage_started = record_stage(
+                "prepare_batch_determine_coordinate_dp_host_ms",
+                stage_started,
+            )
 
         cudagraph_stats = None
         if self.vllm_config.observability_config.cudagraph_metrics:
@@ -2896,6 +2928,7 @@ class GPUModelRunner(
                 num_paddings=batch_descriptor.num_tokens - num_tokens,
                 runtime_mode=str(cudagraph_mode),
             )
+        record_stage("prepare_batch_determine_stats_host_ms", stage_started)
 
         return (
             cudagraph_mode,
