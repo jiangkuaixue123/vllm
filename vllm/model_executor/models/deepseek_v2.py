@@ -1264,6 +1264,7 @@ class DeepseekV2DecoderLayer(nn.Module):
                     parallel_config=parallel_config,
                     quant_config=quant_config,
                     prefix=f"{prefix}.mlp",
+                    is_mtp=self.is_mtp_layer,
                 )
             else:
                 self.mlp = DeepseekV2MLP(
@@ -1278,16 +1279,20 @@ class DeepseekV2DecoderLayer(nn.Module):
             # 这里增加gating的初始化
             if layer_idx >= config.first_k_dense_replace:
                 if self.afd_config and self.afd_config.compute_gate_on_attention:
-                    self.gate = ReplicatedLinear(config.hidden_size,
-                                                 config.n_routed_experts,
-                                                 bias=False,
-                                                 quant_config=None,
-                                                 prefix=f"{prefix}.gate")
-                    if config.topk_method == "noaux_tc":
-                        self.gate.e_score_correction_bias = nn.Parameter(
-                            torch.empty(config.n_routed_experts, dtype=torch.float32))
-                    else:
-                        self.gate.e_score_correction_bias = None
+                    # MTP predictor blocks use standard `forward()` -> `mlp.gate` only.
+                    # Layer-level `gate` is for AFD `compute_attn_output()` on main-body
+                    # MoE layers; it duplicates param names vs checkpoint (`mlp.gate`).
+                    if not self.is_mtp_layer:
+                        self.gate = ReplicatedLinear(config.hidden_size,
+                                                     config.n_routed_experts,
+                                                     bias=False,
+                                                     quant_config=None,
+                                                     prefix=f"{prefix}.gate")
+                        if config.topk_method == "noaux_tc":
+                            self.gate.e_score_correction_bias = nn.Parameter(
+                                torch.empty(config.n_routed_experts, dtype=torch.float32))
+                        else:
+                            self.gate.e_score_correction_bias = None
 
             # Load balancing settings.
             eplb_config = parallel_config.eplb_config

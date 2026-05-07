@@ -213,10 +213,6 @@ class DeepSeekMTP(nn.Module, SupportsPP, DeepseekV2MixtureOfExperts):
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.embed_input_ids(input_ids)
 
-        self.model = DeepSeekMultiTokenPredictor(vllm_config=vllm_config,
-                                                 prefix=maybe_prefix(
-                                                     prefix, "model"))
-
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -450,9 +446,10 @@ class DeepSeekMTP(nn.Module, SupportsPP, DeepseekV2MixtureOfExperts):
             # treat shared weights as top level weights
             name = name.replace(f"model.layers.{spec_layer}.", "model.")
 
-        # 将 mlp.gate 映射到 gate
-        if getattr(self.speculative_config, 'method', None) and self.afd_config:
-            if ".mtp_block.mlp.gate." in name:
-                name = name.replace(".mtp_block.mlp.gate.", ".mtp_block.gate.")
+        # NOTE: Do not map `.mtp_block.mlp.gate.` → `.mtp_block.gate.` here.
+        # MTP drafter MoE keeps the router as `mtp_block.mlp.gate` (same as the
+        # checkpoint). Remapping breaks weight load when `compute_gate_on_attention`
+        # is enabled because AscendDeepseekV2MoE still registers params under
+        # `...mtp_block.mlp.gate.*`.
 
         return name
