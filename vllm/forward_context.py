@@ -393,6 +393,29 @@ def set_forward_context(
         afd_metadata=afd_metadata,
     )
 
+    if num_tokens is not None:
+        # Used by some backends (e.g. AFD / ubatch) for batch-size hints.
+        forward_context.num_tokens = num_tokens
+
+    # A2e/CAM send padding: must be a plain int set *outside* torch.compile so
+    # Dynamo does not treat expected row count as a data-dependent scalar (u0).
+    afd_pad_tgt: int | None = None
+    if dp_metadata is not None:
+        try:
+            from vllm.distributed.parallel_state import get_dp_group
+
+            g = get_dp_group()
+            rid = g.rank_in_group if g is not None else 0
+            nta = dp_metadata.num_tokens_across_dp_cpu
+            if rid is not None and 0 <= int(rid) < int(nta.numel()):
+                afd_pad_tgt = int(nta[int(rid)].item())
+        except Exception:
+            afd_pad_tgt = None
+    if afd_pad_tgt is None and num_tokens is not None:
+        afd_pad_tgt = int(num_tokens)
+    if afd_pad_tgt is not None:
+        forward_context.afd_expected_a2e_rows = afd_pad_tgt
+
     try:
         with override_forward_context(forward_context):
             yield
