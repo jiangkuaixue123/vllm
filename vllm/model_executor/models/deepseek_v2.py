@@ -410,6 +410,7 @@ class DeepseekV2MoE(nn.Module):
             row_idx: Optional[torch.Tensor] = None,
             x_active_mask: Optional[torch.Tensor] = None,
             cam_p2p_ep_name: Optional[str] = "",
+            layer_idx: Optional[int] = None,
     ) -> torch.Tensor:
         num_tokens, hidden_dim = hidden_states.shape
         # TODO(lxf) temperory solution for ffn support dp
@@ -428,7 +429,8 @@ class DeepseekV2MoE(nn.Module):
             row_idx=row_idx,
             x_active_mask=x_active_mask,
             cam_p2p_ep_name=cam_p2p_ep_name,
-            connector_name=self.connector_name
+            connector_name=self.connector_name,
+            layer_idx=layer_idx,
             )
 
         if self.shared_experts is not None:
@@ -1571,6 +1573,7 @@ class DeepseekV2DecoderLayer(nn.Module):
                     router_logits=router_logits,
                     x_active_mask=x_active_mask,
                     cam_p2p_ep_name=cam_p2p_ep_name,
+                    layer_idx=self.layer_idx,
                 )
             else:
                 hidden_states = self.mlp(hidden_states)
