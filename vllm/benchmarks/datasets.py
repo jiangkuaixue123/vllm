@@ -438,6 +438,52 @@ def gen_prompt_decode_to_target_len(
 # -----------------------------------------------------------------------------
 
 
+def parse_range_ratio(raw_value) -> tuple[float, float]:
+    """Parse --random-range-ratio into (input_ratio, output_ratio).
+
+    Accepts both a float (applied symmetrically) and a JSON dict like
+    {"input": 0.0, "output": 0.25} for per-parameter ratios.
+    """
+    if raw_value is None:
+        return (0.0, 0.0)
+    if isinstance(raw_value, (int, float)):
+        f = float(raw_value)
+        return (f, f)
+    if isinstance(raw_value, str):
+        try:
+            parsed = json.loads(raw_value)
+            if isinstance(parsed, dict):
+                return (
+                    float(parsed.get("input", 0.0)),
+                    float(parsed.get("output", 0.0)),
+                )
+        except (json.JSONDecodeError, ValueError):
+            pass
+        try:
+            f = float(raw_value)
+            return (f, f)
+        except ValueError:
+            pass
+    return (0.0, 0.0)
+
+
+def range_ratio_arg_type(value: str):
+    """Argparse type for --random-range-ratio. Accepts float or JSON dict."""
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    try:
+        parsed = json.loads(value)
+        if isinstance(parsed, dict):
+            return value
+    except json.JSONDecodeError:
+        pass
+    raise argparse.ArgumentTypeError(
+        f"Invalid range ratio: {value!r}. Must be a float or JSON dict."
+    )
+
+
 class RandomDataset(BenchmarkDataset):
     """
     Synthetic text-only dataset for serving/throughput benchmarks.
@@ -489,7 +535,8 @@ class RandomDataset(BenchmarkDataset):
         # validate total input tokens (prefix + sampled) is at least 1.
         num_special = int(tokenizer.num_special_tokens_to_add())
         real_input_len = max(0, int(input_len) - num_special)
-        min_sampled_input = math.floor(real_input_len * (1.0 - float(range_ratio)))
+        input_range_ratio, _ = parse_range_ratio(range_ratio)
+        min_sampled_input = math.floor(real_input_len * (1.0 - input_range_ratio))
         min_total_input = int(prefix_len) + min_sampled_input
         if min_total_input < 1:
             raise ValueError(
@@ -590,7 +637,7 @@ class RandomDataset(BenchmarkDataset):
     def get_sampling_params(
         self,
         num_requests: int,
-        range_ratio: float,
+        range_ratio,
         input_len: int,
         output_len: int,
         tokenizer: TokenizerLike,
@@ -598,16 +645,19 @@ class RandomDataset(BenchmarkDataset):
         """
         Get the sampling parameters for the dataset.
         """
+        input_range_ratio, output_range_ratio = parse_range_ratio(range_ratio)
         # Enforce range_ratio < 1
-        if not (0.0 <= range_ratio < 1.0):
-            raise ValueError("range_ratio must be in [0, 1).")
+        if not (0.0 <= input_range_ratio < 1.0):
+            raise ValueError("input range_ratio must be in [0, 1).")
+        if not (0.0 <= output_range_ratio < 1.0):
+            raise ValueError("output range_ratio must be in [0, 1).")
         num_special_tokens = int(tokenizer.num_special_tokens_to_add())
         real_input_len = max(0, int(input_len) - num_special_tokens)
         # Bounds use floor for low and ceil for high
-        input_low = math.floor(real_input_len * (1 - range_ratio))
-        input_high = math.ceil(real_input_len * (1 + range_ratio))
-        output_low = math.floor(output_len * (1 - range_ratio))
-        output_high = math.ceil(output_len * (1 + range_ratio))
+        input_low = math.floor(real_input_len * (1 - input_range_ratio))
+        input_high = math.ceil(real_input_len * (1 + input_range_ratio))
+        output_low = math.floor(output_len * (1 - output_range_ratio))
+        output_high = math.ceil(output_len * (1 + output_range_ratio))
         # Ensure the lower bound for output length is at least 1 to
         # prevent sampling 0 tokens.
         output_low = max(output_low, 1)
@@ -1465,12 +1515,12 @@ def add_dataset_parser(parser: FlexibleArgumentParser):
     )
     random_group.add_argument(
         "--random-range-ratio",
-        type=float,
+        type=range_ratio_arg_type,
         default=0.0,
         help="Range ratio for sampling input/output length, "
-        "used only for random sampling. Must be in the range [0, 1) to define "
-        "a symmetric sampling range"
-        "[length * (1 - range_ratio), length * (1 + range_ratio)].",
+        "used only for random sampling. Must be in the range [0, 1). "
+        "Accepts a float for symmetric range on both input and output, "
+        "or a JSON dict like '{\"output\":0.25}' to only vary output length.",
     )
     random_group.add_argument(
         "--random-prefix-len",

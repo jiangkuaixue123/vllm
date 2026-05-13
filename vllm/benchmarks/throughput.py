@@ -28,6 +28,7 @@ from vllm.benchmarks.datasets import (
     ShareGPTDataset,
     SonnetDataset,
     VisionArenaDataset,
+    range_ratio_arg_type,
 )
 from vllm.benchmarks.lib.utils import convert_to_pytorch_benchmark_format, write_to_json
 from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
@@ -637,12 +638,12 @@ def add_cli_args(parser: argparse.ArgumentParser):
     # random dataset
     parser.add_argument(
         "--random-range-ratio",
-        type=float,
+        type=range_ratio_arg_type,
         default=0.0,
         help="Range ratio for sampling input/output length, "
-        "used only for RandomDataset. Must be in the range [0, 1) to define "
-        "a symmetric sampling range "
-        "[length * (1 - range_ratio), length * (1 + range_ratio)].",
+        "used only for RandomDataset. Must be in the range [0, 1). "
+        "Accepts a float for symmetric range on both input and output, "
+        "or a JSON dict like '{\"output\":0.25}' to only vary output length.",
     )
 
     # hf dtaset
