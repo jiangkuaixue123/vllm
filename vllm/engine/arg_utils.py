@@ -34,6 +34,7 @@ from typing_extensions import TypeIs
 import vllm.envs as envs
 from vllm.config import (
     AttentionConfig,
+    AFDConfig,
     CacheConfig,
     CompilationConfig,
     ConfigType,
@@ -676,6 +677,8 @@ class EngineArgs:
     kv_offloading_size: float | None = CacheConfig.kv_offloading_size
     kv_offloading_backend: KVOffloadingBackend = CacheConfig.kv_offloading_backend
     tokens_only: bool = False
+    # AFD config
+    afd_config: AFDConfig | None = None
 
     shutdown_timeout: int = 0
 
@@ -1428,6 +1431,8 @@ class EngineArgs:
             "--structured-outputs-config", **vllm_kwargs["structured_outputs_config"]
         )
         vllm_group.add_argument("--profiler-config", **vllm_kwargs["profiler_config"])
+        vllm_group.add_argument("--afd-config", **vllm_kwargs["afd_config"])
+
         vllm_group.add_argument(
             "--optimization-level", **vllm_kwargs["optimization_level"]
         )
@@ -2166,6 +2171,7 @@ class EngineArgs:
             reasoning_config=self.reasoning_config,
             profiler_config=self.profiler_config,
             additional_config=self.additional_config,
+            afd_config=self.afd_config,
             optimization_level=self.optimization_level,
             performance_mode=self.performance_mode,
             weight_transfer_config=self.weight_transfer_config,

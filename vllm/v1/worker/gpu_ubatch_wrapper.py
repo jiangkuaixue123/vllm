@@ -14,6 +14,7 @@ from vllm.config import CUDAGraphMode, VllmConfig
 from vllm.distributed import get_ep_group
 from vllm.distributed.device_communicators.pynccl_allocator import set_graph_pool_id
 from vllm.forward_context import (
+    AFDMetadata,
     DPMetadata,
     create_forward_context,
     get_forward_context,
@@ -139,7 +140,10 @@ class UBatchWrapper:
         comm_sms: int = envs.VLLM_DBO_COMM_SMS
 
         set_comm_sms = lambda sms: None
-        if vllm_config.parallel_config.enable_expert_parallel:
+        if (
+            vllm_config.parallel_config.enable_expert_parallel
+            and not vllm_config.afd_config
+        ):
             # Currently only DeepEP highthroughput supports SM control so this
             # only affects that case.
             ep_group = get_ep_group()
@@ -326,6 +330,7 @@ class UBatchWrapper:
         dp_metadata,
         batch_descriptor,
         cudagraph_runtime_mode,
+        afd_metadata,
     ) -> list[UbatchMetadata]:
         # Create one forward context per ubatch
         forward_contexts = []
@@ -333,6 +338,8 @@ class UBatchWrapper:
         # converting None to {}), or a list of dicts (one per ubatch)
         has_slot_mapping = slot_mapping and isinstance(slot_mapping, list)
         for i, ubatch_slice in enumerate(ubatch_slices):
+            afd_metadata_clone = afd_metadata.clone()
+            afd_metadata_clone.afd_stage_idx = i
             forward_contexts.append(
                 create_forward_context(
                     attn_metadata[i] if attn_metadata is not None else None,
@@ -341,6 +348,7 @@ class UBatchWrapper:
                     batch_descriptor=batch_descriptor,
                     cudagraph_runtime_mode=cudagraph_runtime_mode,
                     slot_mapping=slot_mapping[i] if has_slot_mapping else None,
+                    afd_metadata=afd_metadata_clone,
                 )
             )
 
@@ -427,15 +435,19 @@ class UBatchWrapper:
             # for this shape during a normal run.
             if cudagraph_runtime_mode is CUDAGraphMode.FULL:
                 assert batch_descriptor is not None
-                if batch_descriptor.num_tokens in self.cudagraphs:
-                    cudagraph_runtime_mode = CUDAGraphMode.NONE
+                # TODO(jcz): check this
+                # if batch_descriptor.num_tokens in self.cudagraphs:
+                #     cudagraph_runtime_mode = CUDAGraphMode.NONE
 
             if cudagraph_runtime_mode in (CUDAGraphMode.NONE, CUDAGraphMode.PIECEWISE):
+                logger.info(f"jcz UBatchWrapper __call__ 1")
                 return self.runnable(*args, **kwargs)
             else:
                 assert self.cudagraph_wrapper is not None
+                logger.info("jcz UBatchWrapper __call__ 2")
                 return self.cudagraph_wrapper(*args, **kwargs)
 
+        afd_metadata = forward_context.afd_metadata
         attn_metadata = forward_context.attn_metadata
         slot_mapping = forward_context.slot_mapping
         num_tokens = sum(ubatch_slice.num_tokens for ubatch_slice in ubatch_slices)
@@ -479,6 +491,7 @@ class UBatchWrapper:
                 dp_metadata=ubatch_dp_metadata,
                 batch_descriptor=batch_descriptor,
                 cudagraph_runtime_mode=CUDAGraphMode.NONE,
+                afd_metadata=afd_metadata,
             )
             with self.sm_control:
                 return self._capture_ubatches(ubatch_metadata, self.runnable)
@@ -486,6 +499,7 @@ class UBatchWrapper:
             num_tokens in self.cudagraphs
             and cudagraph_runtime_mode is CUDAGraphMode.FULL
         ):
+            logger.info("jcz UBatchWrapper __call__ 4")
             cudagraph_metadata = self.cudagraphs[num_tokens]
             # Sync offloader before replay - ensures any external dependencies
             # from pre-capture prefetches are satisfied.
@@ -505,6 +519,7 @@ class UBatchWrapper:
                 dp_metadata=ubatch_dp_metadata,
                 batch_descriptor=batch_descriptor,
                 cudagraph_runtime_mode=CUDAGraphMode.NONE,
+                afd_metadata=afd_metadata,
             )
             with self.sm_control:
                 return self._run_ubatches(ubatch_metadata, self.runnable)

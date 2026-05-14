@@ -562,7 +562,6 @@ class MooncakeConnectorScheduler:
             * true if the external KV cache tokens will be loaded
               asynchronously (between scheduler steps).
         """
-
         params = request.kv_transfer_params
         logger.debug(
             "MooncakeConnector get_num_new_matched_tokens: "
