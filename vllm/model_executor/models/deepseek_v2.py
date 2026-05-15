@@ -48,7 +48,7 @@ from vllm.distributed import (
     tensor_model_parallel_all_gather,
 )
 from vllm.distributed.afd_transfer.afd_connector.metadata import AFDConnectorMetadata
-from vllm.forward_context import get_forward_context
+from vllm.forward_context import AFDMetadata, get_forward_context
 from vllm.logger import init_logger
 from vllm.config import CacheConfig, ParallelConfig, VllmConfig, get_current_vllm_config
 from vllm.model_executor.layers.activation import SiluAndMul
@@ -105,7 +105,6 @@ elif current_platform.is_xpu():
 
 logger = init_logger(__name__)
 
-from vllm.forward_context import AFDMetadata
 from vllm.v1.worker.ubatching import dbo_current_ubatch_id, dbo_enabled, dbo_yield
 
 
@@ -410,7 +409,6 @@ class DeepseekV2MoE(nn.Module):
             row_idx: Optional[torch.Tensor] = None,
             x_active_mask: Optional[torch.Tensor] = None,
             cam_p2p_ep_name: Optional[str] = "",
-            layer_idx: Optional[int] = None,
     ) -> torch.Tensor:
         num_tokens, hidden_dim = hidden_states.shape
         # TODO(lxf) temperory solution for ffn support dp
@@ -430,7 +428,6 @@ class DeepseekV2MoE(nn.Module):
             x_active_mask=x_active_mask,
             cam_p2p_ep_name=cam_p2p_ep_name,
             connector_name=self.connector_name,
-            layer_idx=layer_idx,
             )
 
         if self.shared_experts is not None:
@@ -1573,7 +1570,6 @@ class DeepseekV2DecoderLayer(nn.Module):
                     router_logits=router_logits,
                     x_active_mask=x_active_mask,
                     cam_p2p_ep_name=cam_p2p_ep_name,
-                    layer_idx=self.layer_idx,
                 )
             else:
                 hidden_states = self.mlp(hidden_states)
