@@ -427,7 +427,7 @@ class DeepseekV2MoE(nn.Module):
             row_idx=row_idx,
             x_active_mask=x_active_mask,
             cam_p2p_ep_name=cam_p2p_ep_name,
-            connector_name=self.connector_name,
+            connector_name=self.connector_name
             )
 
         if self.shared_experts is not None:
