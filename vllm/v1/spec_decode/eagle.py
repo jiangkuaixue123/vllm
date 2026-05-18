@@ -323,9 +323,6 @@ class EagleProposer:
             input_ids = self.input_ids[:num_input_tokens]
             inputs_embeds = None
 
-        draft_forward_kwargs: dict = {}
-        if self.method == "mtp":
-            draft_forward_kwargs["spec_step_idx"] = 0
         with set_forward_context(
             per_layer_attn_metadata,
             self.vllm_config,
@@ -338,7 +335,6 @@ class EagleProposer:
                 positions=self._get_positions(num_input_tokens),
                 hidden_states=self.hidden_states[:num_input_tokens],
                 inputs_embeds=inputs_embeds,
-                **draft_forward_kwargs,
             )
             if self.method == "mtp":
                 last_hidden_states = ret_hidden_states
@@ -346,10 +342,7 @@ class EagleProposer:
             else:
                 last_hidden_states, hidden_states = ret_hidden_states
         sample_hidden_states = last_hidden_states[last_token_indices]
-        if self.method == "mtp":
-            logits = self.model.compute_logits(sample_hidden_states, spec_step_idx=0)
-        else:
-            logits = self.model.compute_logits(sample_hidden_states)
+        logits = self.model.compute_logits(sample_hidden_states)
 
         # Early exit if there is only one draft token to be generated.
         if self.num_speculative_tokens == 1:
@@ -361,7 +354,6 @@ class EagleProposer:
         else:
             positions = target_positions[last_token_indices]
         if self.method in (
-            "mtp",
             "deepseek_mtp",
             "ernie_mtp",
             "longcat_flash_mtp",
@@ -510,9 +502,6 @@ class EagleProposer:
                 input_ids = self.input_ids[:input_batch_size]
                 inputs_embeds = None
 
-            draft_forward_kwargs = {}
-            if self.method == "mtp":
-                draft_forward_kwargs["spec_step_idx"] = token_index + 1
             # Run the model.
             with set_forward_context(
                 per_layer_attn_metadata,
@@ -526,7 +515,6 @@ class EagleProposer:
                     positions=self._get_positions(input_batch_size),
                     hidden_states=self.hidden_states[:input_batch_size],
                     inputs_embeds=inputs_embeds,
-                    **draft_forward_kwargs,
                 )
                 if self.method == "mtp":
                     last_hidden_states = ret_hidden_states
@@ -534,13 +522,7 @@ class EagleProposer:
                 else:
                     last_hidden_states, hidden_states = ret_hidden_states
             hidden_states = hidden_states[:batch_size]
-            if self.method == "mtp":
-                logits = self.model.compute_logits(
-                    last_hidden_states[:batch_size],
-                    spec_step_idx=token_index + 1,
-                )
-            else:
-                logits = self.model.compute_logits(last_hidden_states[:batch_size])
+            logits = self.model.compute_logits(last_hidden_states[:batch_size])
             draft_token_ids = logits.argmax(dim=-1)
             draft_token_ids_list.append(draft_token_ids)
 
