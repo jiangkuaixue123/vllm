@@ -393,9 +393,6 @@ def set_forward_context(
         afd_metadata=afd_metadata,
     )
 
-    if num_tokens is not None:
-        # Used by some backends (e.g. AFD / ubatch) for batch-size hints.
-        forward_context.num_tokens = num_tokens
 
     try:
         with override_forward_context(forward_context):
