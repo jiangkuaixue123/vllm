@@ -393,7 +393,6 @@ def set_forward_context(
         afd_metadata=afd_metadata,
     )
 
-
     try:
         with override_forward_context(forward_context):
             yield
