@@ -132,6 +132,9 @@ class ParallelConfig:
     between local data parallel ranks, but an external LB balances
     between vLLM nodes/replicas. Set explicitly in conjunction with
     --data-parallel-start-rank."""
+    async_dp: bool = False
+    """Experimental: let MoE data-parallel ranks run independent engine cores
+    while preserving the original DP/EP topology for expert weight loading."""
     is_moe_model: bool | None = None
     """Whether the deployed model is MoE (if known)."""
     enable_expert_parallel: bool = False

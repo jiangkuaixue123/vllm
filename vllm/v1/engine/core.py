@@ -801,6 +801,7 @@ class EngineCoreProc(EngineCore):
         )
 
         self.engine_index = engine_index
+        self.async_dp_step_counter = 0
         identity = self.engine_index.to_bytes(length=2, byteorder="little")
         self.engines_running = False
         self.shutdown_state = EngineShutdownState.RUNNING
@@ -1071,7 +1072,12 @@ class EngineCoreProc(EngineCore):
             if data_parallel and vllm_config.model_config.is_moe:
                 # Set data parallel rank for this engine process.
                 parallel_config.data_parallel_rank = dp_rank
-                engine_core = DPEngineCoreProc(*args, **kwargs)
+                if parallel_config.async_dp:
+                    engine_core = EngineCoreProc(
+                        *args, engine_index=dp_rank, **kwargs
+                    )
+                else:
+                    engine_core = DPEngineCoreProc(*args, **kwargs)
             else:
                 # Non-MoE DP ranks are completely independent, so treat like DP=1.
                 # Note that parallel_config.data_parallel_index will still reflect
@@ -1176,6 +1182,19 @@ class EngineCoreProc(EngineCore):
 
     def _process_engine_step(self) -> bool:
         """Called only when there are unfinished local requests."""
+        async_dp = getattr(self.vllm_config.parallel_config, "async_dp", False)
+        if async_dp:
+            self.async_dp_step_counter += 1
+            logger.info(
+                "[async-dp] engine=%s dp_index=%s step=%s begin "
+                "unfinished=%s has_requests=%s batch_queue=%s",
+                self.engine_index,
+                self.vllm_config.parallel_config.data_parallel_index,
+                self.async_dp_step_counter,
+                self.scheduler.has_unfinished_requests(),
+                self.scheduler.has_requests(),
+                len(self.batch_queue),
+            )
 
         # Step the engine core.
         outputs, model_executed = self.step_fn()
@@ -1191,6 +1210,21 @@ class EngineCoreProc(EngineCore):
         # Without this, the tight polling loop can starve background threads.
         if not model_executed and self.scheduler.has_unfinished_requests():
             time.sleep(0.001)
+
+        if async_dp:
+            logger.info(
+                "[async-dp] engine=%s dp_index=%s step=%s end "
+                "model_executed=%s outputs=%s unfinished=%s "
+                "has_requests=%s batch_queue=%s",
+                self.engine_index,
+                self.vllm_config.parallel_config.data_parallel_index,
+                self.async_dp_step_counter,
+                model_executed,
+                len(outputs) if outputs else 0,
+                self.scheduler.has_unfinished_requests(),
+                self.scheduler.has_requests(),
+                len(self.batch_queue),
+            )
 
         return model_executed
 

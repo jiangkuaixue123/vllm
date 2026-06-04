@@ -429,6 +429,7 @@ class EngineArgs:
     data_parallel_hybrid_lb: bool = False
     data_parallel_external_lb: bool = False
     data_parallel_backend: DataParallelBackend = ParallelConfig.data_parallel_backend
+    async_dp: bool = ParallelConfig.async_dp
     enable_expert_parallel: bool = ParallelConfig.enable_expert_parallel
     enable_ep_weight_filter: bool = ParallelConfig.enable_ep_weight_filter
     moe_backend: MoEBackend = KernelConfig.moe_backend
@@ -921,6 +922,7 @@ class EngineArgs:
             "-dpe",
             **parallel_kwargs["data_parallel_external_lb"],
         )
+        parallel_group.add_argument("--async-dp", **parallel_kwargs["async_dp"])
         parallel_group.add_argument(
             "--enable-expert-parallel",
             "-ep",
@@ -1550,6 +1552,11 @@ class EngineArgs:
         self.model = model_config.model
         self.model_weights = model_config.model_weights
         self.tokenizer = model_config.tokenizer
+        if self.async_dp:
+            if not model_config.is_moe:
+                raise ValueError("--async-dp is only supported for MoE models.")
+            if not model_config.enforce_eager:
+                raise ValueError("--async-dp requires --enforce-eager.")
 
         self._check_feature_supported()
         self._set_default_chunked_prefill_and_prefix_caching_args(model_config)
@@ -1772,6 +1779,7 @@ class EngineArgs:
             data_parallel_rpc_port=data_parallel_rpc_port,
             data_parallel_backend=self.data_parallel_backend,
             data_parallel_hybrid_lb=self.data_parallel_hybrid_lb,
+            async_dp=self.async_dp,
             is_moe_model=model_config.is_moe,
             enable_expert_parallel=self.enable_expert_parallel,
             enable_ep_weight_filter=self.enable_ep_weight_filter,
