@@ -329,6 +329,7 @@ def set_forward_context(
     dp_metadata: DPMetadata | None = None
     if (
         vllm_config.parallel_config.data_parallel_size > 1
+        and not vllm_config.parallel_config.async_dp
         and vllm_config.parallel_config.is_moe_model is not False
         and (attn_metadata is not None or num_tokens is not None)
     ):
