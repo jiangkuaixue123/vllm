@@ -899,9 +899,12 @@ def launch_core_engines(
     )
 
     if run_coordinator:
+        enable_wave_coordination = (
+            vllm_config.model_config.is_moe and not parallel_config.async_dp
+        )
         coordinator = DPCoordinator(
             parallel_config,
-            enable_wave_coordination=vllm_config.model_config.is_moe,
+            enable_wave_coordination=enable_wave_coordination,
         )
 
         addresses.coordinator_input, addresses.coordinator_output = (
