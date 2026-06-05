@@ -377,6 +377,25 @@ class EngineCore:
         )
         self._iteration_index += 1
 
+    def _log_dp_schedule(self, scheduler_output: SchedulerOutput) -> None:
+        parallel_config = self.vllm_config.parallel_config
+        token_counts = list(scheduler_output.num_scheduled_tokens.values())
+        logger.info(
+            "[dp-schedule] engine=%s dp_index=%s async_dp=%s step=%s "
+            "scheduled_reqs=%s scheduled_tokens=%s new_reqs=%s "
+            "cached_reqs=%s resumed_reqs=%s token_counts=%s",
+            self.engine_index,
+            parallel_config.data_parallel_index,
+            getattr(parallel_config, "async_dp", False),
+            getattr(self, "dp_step_counter", 0),
+            len(scheduler_output.num_scheduled_tokens),
+            scheduler_output.total_num_scheduled_tokens,
+            len(scheduler_output.scheduled_new_reqs),
+            scheduler_output.scheduled_cached_reqs.num_reqs,
+            len(scheduler_output.scheduled_cached_reqs.resumed_req_ids),
+            token_counts,
+        )
+
     def step(self) -> tuple[dict[int, EngineCoreOutputs], bool]:
         """Schedule, execute, and make output.
 
@@ -389,6 +408,7 @@ class EngineCore:
         if not self.scheduler.has_requests():
             return {}, False
         scheduler_output = self.scheduler.schedule()
+        self._log_dp_schedule(scheduler_output)
         future = self.model_executor.execute_model(scheduler_output, non_block=True)
         grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
         with (
@@ -447,6 +467,7 @@ class EngineCore:
         deferred_scheduler_output = None
         if self.scheduler.has_requests():
             scheduler_output = self.scheduler.schedule()
+            self._log_dp_schedule(scheduler_output)
             with self.log_error_detail(scheduler_output):
                 exec_future = self.model_executor.execute_model(
                     scheduler_output, non_block=True
