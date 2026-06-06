@@ -136,6 +136,24 @@ def test_random_dataset_different_seeds(
     assert a != b
 
 
+@pytest.mark.benchmark
+def test_random_dataset_can_fix_output_len_while_varying_input(
+    hf_tokenizer: PreTrainedTokenizerBase,
+) -> None:
+    dataset = RandomDataset(random_seed=0)
+    samples = dataset.sample(
+        tokenizer=hf_tokenizer,
+        num_requests=32,
+        range_ratio=0.5,
+        output_range_ratio=0.0,
+        input_len=50,
+        output_len=1,
+    )
+
+    assert {sample.expected_output_len for sample in samples} == {1}
+    assert len({sample.prompt_len for sample in samples}) > 1
+
+
 # -----------------------------
 # RandomMultiModalDataset tests
 # -----------------------------

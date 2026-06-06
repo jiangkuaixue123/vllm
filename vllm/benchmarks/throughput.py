@@ -356,6 +356,9 @@ def get_requests(args, tokenizer):
         and args.dataset_name not in {"prefix_repetition", "random-mm", "random-rerank"}
     ):
         sample_kwargs["range_ratio"] = args.random_range_ratio
+        sample_kwargs["output_range_ratio"] = getattr(
+            args, "random_output_range_ratio", None
+        )
         # prefer random_* arguments, fall back to regular arguments
         random_prefix_len = getattr(args, "random_prefix_len", None)
         sample_kwargs["prefix_len"] = (
@@ -452,6 +455,9 @@ def get_requests(args, tokenizer):
             random_prefix_len if random_prefix_len is not None else prefix_len
         )
         sample_kwargs["range_ratio"] = args.random_range_ratio
+        sample_kwargs["output_range_ratio"] = getattr(
+            args, "random_output_range_ratio", None
+        )
     elif args.dataset_name == "random-rerank":
         dataset_cls = RandomDatasetForReranking
         # prefer random_* arguments, fall back to regular arguments
@@ -573,6 +579,18 @@ def validate_args(args):
         warnings.warn(
             "--random-range-ratio will be ignored since \
                 --dataset-name is not 'random', 'random-mm', or 'random-rerank'.",
+            stacklevel=2,
+        )
+
+    # --random-output-range-ratio: only used when dataset_name is 'random'
+    # or 'random-mm'
+    if (
+        args.dataset_name not in {"random", "random-mm"}
+        and getattr(args, "random_output_range_ratio", None) is not None
+    ):
+        warnings.warn(
+            "--random-output-range-ratio will be ignored since "
+            "--dataset-name is not 'random' or 'random-mm'.",
             stacklevel=2,
         )
 

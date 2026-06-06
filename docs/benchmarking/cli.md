@@ -877,7 +877,10 @@ vllm serve Qwen/Qwen2.5-VL-3B-Instruct \
   --mm-processor-kwargs max_pixels=1003520
 ```
 
-Benchmark. It is recommended to use the flag `--ignore-eos` to simulate real responses. You can set the size of the output via the arg `random-output-len`.
+Benchmark. It is recommended to use the flag `--ignore-eos` to simulate real responses.
+You can set the size of the output via the arg `random-output-len`. To vary random
+input lengths while keeping the output length fixed, set `--random-range-ratio` and
+`--random-output-range-ratio 0`.
 
 Ex.1: Fixed number of items and a single image resolution, enforcing generation of approx 40 tokens:
 
