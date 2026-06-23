@@ -189,6 +189,12 @@ class LLMEngine:
     def has_unfinished_requests(self) -> bool:
         has_unfinished = self.output_processor.has_unfinished_requests()
         if self.dp_group is None:
+            parallel_config = self.vllm_config.parallel_config
+            if (
+                parallel_config.async_dp
+                and parallel_config.data_parallel_rank_local is not None
+            ):
+                return has_unfinished
             return has_unfinished or self.engine_core.dp_engines_running()
         return self.has_unfinished_requests_dp(has_unfinished)
 
