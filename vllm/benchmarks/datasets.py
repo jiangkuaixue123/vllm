@@ -71,7 +71,7 @@ class SampleRequest:
     Represents a single inference request for benchmarking.
     """
 
-    prompt: str | list[str]
+    prompt: str | list[str] | list[int]
     prompt_len: int
     expected_output_len: int
     multi_modal_data: MultiModalDataDict | dict | list[dict] | None = None
@@ -2136,6 +2136,9 @@ class CustomDataset(BenchmarkDataset):
     'custom-output-len' argument is None or -1.
     """
 
+    ALLOW_TOKEN_ID_PROMPTS = True
+    TOKEN_ID_PROMPT_KEYS = ("prompt_token_ids", "token_ids", "input_ids")
+
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
         self.load_data()
@@ -2155,9 +2158,16 @@ class CustomDataset(BenchmarkDataset):
         if self.dataset_path.endswith(".jsonl"):
             jsonl_data = pd.read_json(path_or_buf=self.dataset_path, lines=True)
 
-            # check if the JSONL file has a 'prompt' column
-            if "prompt" not in jsonl_data.columns:
-                raise ValueError("JSONL file must contain a 'prompt' column.")
+            # check if the JSONL file has a text prompt or token-id prompt column
+            has_text_prompt = "prompt" in jsonl_data.columns
+            has_token_id_prompt = self.ALLOW_TOKEN_ID_PROMPTS and any(
+                key in jsonl_data.columns for key in self.TOKEN_ID_PROMPT_KEYS
+            )
+            if not has_text_prompt and not has_token_id_prompt:
+                raise ValueError(
+                    "JSONL file must contain a 'prompt' column or one of "
+                    f"{self.TOKEN_ID_PROMPT_KEYS}."
+                )
 
             # Convert each row to a dictionary and append to self.data
             # This will convert the DataFrame to a list of dictionaries
@@ -2201,7 +2211,11 @@ class CustomDataset(BenchmarkDataset):
         for i, item in enumerate(self.data):
             if len(sampled_requests) >= num_requests:
                 break
-            prompt = item["prompt"]
+            prompt_token_ids = self._get_prompt_token_ids(item)
+            if prompt_token_ids is None:
+                prompt = item["prompt"]
+            else:
+                prompt = prompt_token_ids
 
             if tokenizer is None:
                 new_output_len = 1
@@ -2224,7 +2238,11 @@ class CustomDataset(BenchmarkDataset):
                         ) from e
 
             if tokenizer is None:
-                prompt_len = 1
+                prompt_len = (
+                    len(prompt_token_ids) if prompt_token_ids is not None else 1
+                )
+            elif prompt_token_ids is not None:
+                prompt_len = len(prompt_token_ids)
             else:
                 # apply template
                 if not skip_chat_template:
@@ -2249,6 +2267,45 @@ class CustomDataset(BenchmarkDataset):
 
         return sampled_requests
 
+    @classmethod
+    def _get_prompt_token_ids(cls, item: dict[str, Any]) -> list[int] | None:
+        if not cls.ALLOW_TOKEN_ID_PROMPTS:
+            return None
+
+        for key in cls.TOKEN_ID_PROMPT_KEYS:
+            value = item.get(key)
+            if cls._is_missing_value(value):
+                continue
+            return cls._parse_prompt_token_ids(value, key)
+        return None
+
+    @staticmethod
+    def _is_missing_value(value: Any) -> bool:
+        if value is None:
+            return True
+        if isinstance(value, float) and np.isnan(value):
+            return True
+        return False
+
+    @staticmethod
+    def _parse_prompt_token_ids(value: Any, field_name: str) -> list[int]:
+        if isinstance(value, np.ndarray):
+            value = value.tolist()
+        if not isinstance(value, list):
+            raise ValueError(f"{field_name} must be a list of integer token ids.")
+
+        token_ids: list[int] = []
+        for index, token_id in enumerate(value):
+            if isinstance(token_id, bool) or not isinstance(token_id, int):
+                raise ValueError(
+                    f"{field_name}[{index}] must be an integer token id, "
+                    f"got {token_id!r}."
+                )
+            if token_id < 0:
+                raise ValueError(f"{field_name}[{index}] must be non-negative.")
+            token_ids.append(token_id)
+        return token_ids
+
 
 class CustomMMDataset(CustomDataset):
     """
@@ -2271,6 +2328,7 @@ class CustomMMDataset(CustomDataset):
     """
 
     IS_MULTIMODAL = True
+    ALLOW_TOKEN_ID_PROMPTS = False
 
     def sample(
         self,

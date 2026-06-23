@@ -64,7 +64,7 @@ class StreamedResponseHandler:
 class RequestFuncInput:
     """The input for the request function."""
 
-    prompt: str | list[str]
+    prompt: str | list[str] | list[int]
     api_url: str
     prompt_len: int
     output_len: int
