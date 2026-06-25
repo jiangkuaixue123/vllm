@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import itertools
-import os
 import time
 from collections import defaultdict, deque
 from collections.abc import Iterable
@@ -63,99 +62,6 @@ from vllm.v1.structured_output import StructuredOutputManager
 from vllm.v1.utils import record_function_or_nullcontext
 
 logger = init_logger(__name__)
-
-_FAKE_PREFIX_CACHE_HIT_RATIO_ENV = "VLLM_ASCEND_FAKE_PREFIX_CACHE_HIT_RATIO"
-
-
-def _get_fake_prefix_cache_hit_ratio() -> float | None:
-    value = os.getenv(_FAKE_PREFIX_CACHE_HIT_RATIO_ENV)
-    if value is None:
-        return None
-    return float(value)
-
-
-def _maybe_apply_fake_prefix_cache(
-    request: Request,
-    block_size: int,
-    num_local_computed_tokens: int,
-    num_external_computed_tokens: int,
-    load_kv_async: bool,
-) -> int:
-    """Raise external prefix-cache hits to a debug target.
-
-    Fake tokens are represented as externally-computed tokens. Their KV cache
-    contents are not valid, so this is for performance profiling only.
-    """
-    ratio = _get_fake_prefix_cache_hit_ratio()
-    if ratio is None:
-        return num_external_computed_tokens
-    if not 0 <= ratio <= 1:
-        raise ValueError(f"{_FAKE_PREFIX_CACHE_HIT_RATIO_ENV} must be in [0, 1]")
-
-    external_before = num_external_computed_tokens
-    if ratio == 0 or load_kv_async:
-        logger.info(
-            "Fake prefix cache debug: request_id=%s ratio=%s "
-            "load_kv_async=%s block_size=%s prompt_tokens=%s total_tokens=%s "
-            "local_computed=%s external_before=%s external_after=%s "
-            "applied=False",
-            getattr(request, "request_id", None),
-            ratio,
-            load_kv_async,
-            block_size,
-            request.num_prompt_tokens,
-            request.num_tokens,
-            num_local_computed_tokens,
-            external_before,
-            num_external_computed_tokens,
-        )
-        return num_external_computed_tokens
-
-    max_hit_tokens = max(request.num_tokens - 1, 0)
-    target_hit_tokens = min(
-        int(request.num_prompt_tokens * ratio), max_hit_tokens
-    )
-    target_hit_tokens = target_hit_tokens // block_size * block_size
-    current_hit_tokens = num_local_computed_tokens + num_external_computed_tokens
-    if target_hit_tokens <= current_hit_tokens:
-        logger.info(
-            "Fake prefix cache debug: request_id=%s ratio=%s "
-            "load_kv_async=%s block_size=%s prompt_tokens=%s total_tokens=%s "
-            "target_hit_tokens=%s current_hit_tokens=%s local_computed=%s "
-            "external_before=%s external_after=%s applied=False",
-            getattr(request, "request_id", None),
-            ratio,
-            load_kv_async,
-            block_size,
-            request.num_prompt_tokens,
-            request.num_tokens,
-            target_hit_tokens,
-            current_hit_tokens,
-            num_local_computed_tokens,
-            external_before,
-            num_external_computed_tokens,
-        )
-        return num_external_computed_tokens
-
-    num_external_computed_tokens += target_hit_tokens - current_hit_tokens
-    logger.info(
-        "Fake prefix cache debug: request_id=%s ratio=%s "
-        "load_kv_async=%s block_size=%s prompt_tokens=%s total_tokens=%s "
-        "target_hit_tokens=%s current_hit_tokens=%s local_computed=%s "
-        "external_before=%s external_after=%s applied=True",
-        getattr(request, "request_id", None),
-        ratio,
-        load_kv_async,
-        block_size,
-        request.num_prompt_tokens,
-        request.num_tokens,
-        target_hit_tokens,
-        current_hit_tokens,
-        num_local_computed_tokens,
-        external_before,
-        num_external_computed_tokens,
-    )
-    return num_external_computed_tokens
 
 
 class Scheduler(SchedulerInterface):
@@ -697,7 +603,6 @@ class Scheduler(SchedulerInterface):
                     continue
 
                 num_external_computed_tokens = 0
-                fake_prefix_cache_applied = False
                 load_kv_async = False
                 connector_prefix_cache_queries, connector_prefix_cache_hits = 0, 0
 
@@ -733,46 +638,6 @@ class Scheduler(SchedulerInterface):
                         connector_prefix_cache_hits = num_external_computed_tokens
 
                     # Total computed tokens (local + external).
-                    real_num_external_computed_tokens = num_external_computed_tokens
-                    logger.info(
-                        "Fake prefix cache callsite before: scheduler=%s "
-                        "request_id=%s ratio=%s load_kv_async=%s block_size=%s "
-                        "prompt_tokens=%s total_tokens=%s local_computed=%s "
-                        "external_before=%s",
-                        type(self).__name__,
-                        getattr(request, "request_id", None),
-                        _get_fake_prefix_cache_hit_ratio(),
-                        load_kv_async,
-                        self.block_size,
-                        request.num_prompt_tokens,
-                        request.num_tokens,
-                        num_new_local_computed_tokens,
-                        real_num_external_computed_tokens,
-                    )
-                    num_external_computed_tokens = _maybe_apply_fake_prefix_cache(
-                        request,
-                        self.block_size,
-                        num_new_local_computed_tokens,
-                        num_external_computed_tokens,
-                        load_kv_async,
-                    )
-                    logger.info(
-                        "Fake prefix cache callsite after: scheduler=%s "
-                        "request_id=%s ratio=%s external_before=%s "
-                        "external_after=%s",
-                        type(self).__name__,
-                        getattr(request, "request_id", None),
-                        _get_fake_prefix_cache_hit_ratio(),
-                        real_num_external_computed_tokens,
-                        num_external_computed_tokens,
-                    )
-                    request.num_external_computed_tokens = (
-                        num_external_computed_tokens
-                    )
-                    fake_prefix_cache_applied = (
-                        num_external_computed_tokens
-                        != real_num_external_computed_tokens
-                    )
                     num_computed_tokens = (
                         num_new_local_computed_tokens + num_external_computed_tokens
                     )
@@ -885,9 +750,7 @@ class Scheduler(SchedulerInterface):
                     new_computed_blocks=new_computed_blocks,
                     num_lookahead_tokens=effective_lookahead_tokens,
                     num_external_computed_tokens=num_external_computed_tokens,
-                    delay_cache_blocks=(
-                        load_kv_async or fake_prefix_cache_applied
-                    ),
+                    delay_cache_blocks=load_kv_async,
                     num_encoder_tokens=num_encoder_tokens,
                 )
 
