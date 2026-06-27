@@ -201,8 +201,6 @@ def coordinate_batch_across_dp(
     if parallel_config.data_parallel_size == 1:
         # Early exit.
         return False, None, cudagraph_mode
-    if parallel_config.async_dp:
-        return False, None, cudagraph_mode
 
     # If the caller has explicitly enabled microbatching.
     should_attempt_ubatching = False

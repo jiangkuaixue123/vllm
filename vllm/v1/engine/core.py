@@ -1093,12 +1093,7 @@ class EngineCoreProc(EngineCore):
             if data_parallel and vllm_config.model_config.is_moe:
                 # Set data parallel rank for this engine process.
                 parallel_config.data_parallel_rank = dp_rank
-                if parallel_config.async_dp:
-                    engine_core = EngineCoreProc(
-                        *args, engine_index=dp_rank, **kwargs
-                    )
-                else:
-                    engine_core = DPEngineCoreProc(*args, **kwargs)
+                engine_core = DPEngineCoreProc(*args, **kwargs)
             else:
                 # Non-MoE DP ranks are completely independent, so treat like DP=1.
                 # Note that parallel_config.data_parallel_index will still reflect
