@@ -87,6 +87,7 @@ class Scheduler(SchedulerInterface):
         self.kv_events_config = vllm_config.kv_events_config
         self.parallel_config = vllm_config.parallel_config
         self.log_stats = log_stats
+        self._scheduler_log_step = 0
         self.observability_config = vllm_config.observability_config
         self.kv_metrics_collector: KVCacheMetricsCollector | None = None
         if self.observability_config.kv_cache_metrics:
@@ -1234,6 +1235,20 @@ class Scheduler(SchedulerInterface):
         self.reset_preempted_req_ids.add(request.request_id)
 
     def _update_after_schedule(self, scheduler_output: SchedulerOutput) -> None:
+        self._scheduler_log_step += 1
+        logger.info(
+            "[SchedulerStep] dp_rank=%d step=%d num_requests=%d "
+            "total_tokens=%d request_tokens=%s request_prompt_tokens=%s",
+            self.parallel_config.data_parallel_rank,
+            self._scheduler_log_step,
+            len(scheduler_output.num_scheduled_tokens),
+            scheduler_output.total_num_scheduled_tokens,
+            scheduler_output.num_scheduled_tokens,
+            {
+                req_id: self.requests[req_id].num_prompt_tokens
+                for req_id in scheduler_output.num_scheduled_tokens
+            },
+        )
         # Advance the number of computed tokens for the request AFTER
         # the request is scheduled.
         # 1. The scheduler_output of the current step has to include the
