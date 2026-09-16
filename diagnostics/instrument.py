@@ -5,8 +5,8 @@ import triton
 import triton.language as tl
 from vllm.v1.worker.encoder_cudagraph import EncoderCudaGraphManager
 
-@triton.jit
-def flags(X, S, LIVE, ROWS:tl.constexpr, WIDTH:tl.constexpr, STRIDE:tl.constexpr, POINT:tl.constexpr, B:tl.constexpr):
+@triton.jit(do_not_specialize=["POINT"])
+def flags(X, S, LIVE, ROWS:tl.constexpr, WIDTH:tl.constexpr, STRIDE:tl.constexpr, POINT, B:tl.constexpr):
     i=tl.program_id(0)*B+tl.arange(0,B)
     row=i//WIDTH
     x=tl.load(X+row*STRIDE+i%WIDTH,i<ROWS*WIDTH,other=0).to(tl.float32)

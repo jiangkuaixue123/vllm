@@ -1,6 +1,8 @@
 import os
 os.environ.setdefault('VLLM_USE_V2_MODEL_RUNNER','1')
 os.environ['VLLM_ALLOW_INSECURE_SERIALIZATION']='1'
+if os.environ.get('CONTROL'):
+ import diagnostics.controls
 if os.environ.get('PROBE'):
  import diagnostics.instrument
 from functools import partial
@@ -22,6 +24,7 @@ def compare(worker,batches):
    actual=m.execute(kw)[0]; n=actual.shape[0]
    if hasattr(m,'diag_states'): print('FLAGS',list(zip(m.diag_names,m.diag_states[:len(m.diag_names)].tolist())),flush=True)
    budget=min(b for b in m.budget_graphs['default'] if b>=n); gm=m.budget_graphs['default'][budget]
+   print('METADATA',{'budget':budget,'shapes':{k:list(v.shape) for k,v in gm.input_buffers.items()},'window_valid_permutation':bool(torch.equal(gm.input_buffers['window_index'][:n].sort().values,torch.arange(n,device=r.device))),'full_cu':gm.input_buffers['cu_seqlens'].tolist(),'window_cu':gm.input_buffers['cu_window_seqlens'].tolist()},flush=True)
    padded=r.model.encoder_cudagraph_forward(dict(gm.input_buffers))[:n]; eager=r.model.encoder_eager_forward(kw)
    results.append({'tokens':n,'patches':kw['pixel_values'].shape[0],'grid':kw['image_grid_thw'].tolist(),'backend':str(r.model.visual.attn_backend),'budget':budget,'graph_vs_padded':delta(actual,padded),'graph_vs_eager':delta(actual,eager),'padded_vs_eager':delta(padded,eager)})
  return results
