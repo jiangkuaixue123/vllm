@@ -11,5 +11,5 @@ for version in [2,3]:
  for poison in [False,True]:
   vv=v.clone()
   if poison: vv[n:].fill_(float('nan'))
-  out=fa(q,k,vv,cu_seqlens_q=cu,cu_seqlens_k=cu,max_seqlen_q=80,max_seqlen_k=80,fa_version=version)
+  out=fa(q,k,vv,cu_seqlens_q=cu,cu_seqlens_k=cu,max_seqlen_q=80,max_seqlen_k=80,fa_version=version,out=torch.zeros_like(q))
   print(dict(version=version,poison=poison,finite_first=out[:n].isfinite().all().item(),max_error=(out[:n]-ref).abs().max().item()),flush=True)
