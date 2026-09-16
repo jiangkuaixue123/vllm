@@ -1,6 +1,8 @@
 import os
 os.environ.setdefault('VLLM_USE_V2_MODEL_RUNNER','1')
 os.environ['VLLM_ALLOW_INSECURE_SERIALIZATION']='1'
+if os.environ.get('PROBE'):
+ import diagnostics.instrument
 from functools import partial
 from transformers import AutoProcessor
 from vllm import LLM
@@ -14,7 +16,11 @@ def compare(worker,batches):
  results=[]
  with torch.inference_mode():
   for batch in batches:
-   kw={k:v.to(r.device) for k,v in batch.items()}; actual=m.execute(kw)[0]; n=actual.shape[0]
+   kw={k:v.to(r.device) for k,v in batch.items()}
+   if hasattr(m,'diag_states'):
+    m.diag_states.zero_(); m.diag_live.fill_(kw['pixel_values'].shape[0])
+   actual=m.execute(kw)[0]; n=actual.shape[0]
+   if hasattr(m,'diag_states'): print('FLAGS',list(zip(m.diag_names,m.diag_states[:len(m.diag_names)].tolist())),flush=True)
    budget=min(b for b in m.budget_graphs['default'] if b>=n); gm=m.budget_graphs['default'][budget]
    padded=r.model.encoder_cudagraph_forward(dict(gm.input_buffers))[:n]; eager=r.model.encoder_eager_forward(kw)
    results.append({'tokens':n,'patches':kw['pixel_values'].shape[0],'grid':kw['image_grid_thw'].tolist(),'backend':str(r.model.visual.attn_backend),'budget':budget,'graph_vs_padded':delta(actual,padded),'graph_vs_eager':delta(actual,eager),'padded_vs_eager':delta(padded,eager)})
