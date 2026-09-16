@@ -32,7 +32,7 @@ def compare(worker,batches):
 def main():
  model='Qwen/Qwen2.5-VL-3B-Instruct'; p=AutoProcessor.from_pretrained(model,revision='66285546d2b821cf421d4f5eb2576359d3770cd3').image_processor
  batches=[dict(p(images=[IMAGE_ASSETS[0].pil_image.resize(size)],return_tensors='pt',do_rescale=False,do_normalize=False)) for size in [(224,224),(1280,720),(224,224)]]
- llm=LLM(model=model,revision='66285546d2b821cf421d4f5eb2576359d3770cd3',seed=0,gpu_memory_utilization=0.5,mm_encoder_only=os.environ.get('RUNNER','eonly')=='eonly',enable_prefix_caching=False,dtype='bfloat16',max_model_len=16384,max_num_seqs=32,limit_mm_per_prompt={'image':2,'video':0},compilation_config={'cudagraph_mode':'NONE','cudagraph_mm_encoder':True,**({'encoder_cudagraph_token_budgets':[2048]} if os.environ.get('SINGLE_BUDGET') else {})})
+ llm=LLM(**({'kernel_config':{'enable_jit_warmup':False,'enable_cutedsl_warmup':False}} if os.environ.get('RUNNER')=='full' else {}),model=model,revision='66285546d2b821cf421d4f5eb2576359d3770cd3',seed=0,gpu_memory_utilization=0.5,mm_encoder_only=os.environ.get('RUNNER','eonly')=='eonly',enable_prefix_caching=False,dtype='bfloat16',max_model_len=16384,max_num_seqs=32,limit_mm_per_prompt={'image':2,'video':0},compilation_config={**({'mode':0} if os.environ.get('RUNNER')=='full' else {}),'cudagraph_mode':'NONE','cudagraph_mm_encoder':True,**({'encoder_cudagraph_token_budgets':[2048]} if os.environ.get('SINGLE_BUDGET') else {})})
  try: print('DIAGNOSTIC',llm.collective_rpc(partial(compare,batches=batches)),flush=True)
  finally: llm.llm_engine.engine_core.shutdown()
 if __name__=='__main__':main()
