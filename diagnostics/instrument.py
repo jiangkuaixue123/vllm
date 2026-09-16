@@ -14,15 +14,17 @@ def flags(X, S, LIVE, ROWS:tl.constexpr, WIDTH:tl.constexpr, STRIDE:tl.constexpr
     live=tl.load(LIVE)
     a=tl.sum(((row<live)&bad&(i<ROWS*WIDTH)).to(tl.int32),0)
     b=tl.sum(((row>=live)&bad&(i<ROWS*WIDTH)).to(tl.int32),0)
-    tl.atomic_add(S+POINT*2,a)
-    tl.atomic_add(S+POINT*2+1,b)
+    tl.atomic_add(S+POINT*4,a)
+    tl.atomic_add(S+POINT*4+1,b)
+    tl.atomic_add(S+POINT*4+2,tl.sum(((row<live)&(x!=x)&(i<ROWS*WIDTH)).to(tl.int32),0))
+    tl.atomic_add(S+POINT*4+3,tl.sum(((row>=live)&(x!=x)&(i<ROWS*WIDTH)).to(tl.int32),0))
 
 old=EncoderCudaGraphManager.capture
 
 def capture(self,graph_pool):
     visual=self.model.visual
     self.diag_live=torch.tensor([4784],device=self.device,dtype=torch.int32)
-    self.diag_states=torch.zeros((256,2),device=self.device,dtype=torch.int32)
+    self.diag_states=torch.zeros((256,4),device=self.device,dtype=torch.int32)
     self.diag_names=[]
     handles=[]
     def record(name,x,axis=0):
@@ -38,7 +40,7 @@ def capture(self,graph_pool):
             for k in ['query','key','value']: record(name+'.'+k,kwargs[k],1)
         return hook
     for i,block in enumerate(visual.blocks):
-        if os.environ.get('PROBE')=='fine' and i<=8:
+        if (os.environ.get('PROBE')=='fine' and i<=8) or (os.environ.get('PROBE')=='focus' and i in [1,2]):
             handles.append(block.attn.attn.register_forward_pre_hook(pre_attn(f'{i}.attention'),with_kwargs=True))
             handles.append(block.attn.attn.register_forward_hook(lambda mod,args,out,i=i:record(f'{i}.attention.out',out,1)))
             for sub in ['norm1','attn.qkv','attn.proj','norm2','mlp.gate_up_proj','mlp.down_proj']:
